@@ -154,7 +154,8 @@ namespace SignalSafe {
                 close(pipefd[0]);
                 dup2(pipefd[1], STDOUT_FILENO);
                 char const* const argv[] = {"/bin/sh", "-c", cmd, nullptr};
-                execv("/bin/sh", cc<char* const*>(argv));
+                // All callers in CrashReporter.cpp supply fixed diagnostic command literals.
+                execv("/bin/sh", cc<char* const*>(argv)); // Flawfinder: ignore
 
                 CBufFileWriter<64> failmsg(pipefd[1]);
                 failmsg += "<execv(";

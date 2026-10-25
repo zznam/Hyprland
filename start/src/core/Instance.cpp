@@ -63,9 +63,11 @@ void CHyprlandInstance::runHyprlandThread(bool safeMode, bool lockedCrash) {
         if (Nix::shouldUseNixGL()) {
             argsStd.insert(argsStd.begin(), g_state->customPath.value_or("Hyprland"));
             args.insert(args.begin(), strdup(argsStd.front().c_str()));
-            execvp("nixGL", args.data());
+            // Same-user launcher: executable and argv are selected by the invoking user.
+            execvp("nixGL", args.data()); // Flawfinder: ignore
         } else
-            execvp(g_state->customPath.value_or("Hyprland").c_str(), args.data());
+            // Same-user launcher: no shell expansion or privilege transition.
+            execvp(g_state->customPath.value_or("Hyprland").c_str(), args.data()); // Flawfinder: ignore
 
         g_logger->log(Hyprutils::CLI::LOG_ERR, "fork(): execvp failed: {}", strerror(errno));
         std::fflush(stdout);

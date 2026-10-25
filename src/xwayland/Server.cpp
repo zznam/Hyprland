@@ -63,7 +63,8 @@ static CFileDescriptor createSocket(struct sockaddr_un* addr, size_t pathSize) {
     // Required for the correct functioning of `xhost` #9574
     // The operation is safe because XWayland controls socket access by itself
     // and rejects connections not matched by the `xhost` ACL
-    if (isRegularSocket && chmod(addr->sun_path, 0666) < 0) {
+    // openSockets validates directory ownership/sticky permissions before binding this socket.
+    if (isRegularSocket && chmod(addr->sun_path, 0666) < 0) { // Flawfinder: ignore
         // We are only extending the default permissions,
         // and I don't see the reason to make a full stop in case of a failed operation.
         LOG(Log::ERR, "Failed to set permission mode for socket {}{}", dbgSocketPathPrefix, dbgSocketPathRem);
@@ -315,7 +316,8 @@ void CXWaylandServer::runXWayland(CFileDescriptor& notifyFD) {
 
     LOG(Log::DEBUG, "Starting XWayland with \"{}\", bon voyage!", cmd);
 
-    execl("/bin/sh", "/bin/sh", "-c", cmd.c_str(), nullptr);
+    // Command arguments above contain only our generated display name and integer descriptors.
+    execl("/bin/sh", "/bin/sh", "-c", cmd.c_str(), nullptr); // Flawfinder: ignore
 
     LOG(Log::ERR, "XWayland failed to open");
     _exit(1);
