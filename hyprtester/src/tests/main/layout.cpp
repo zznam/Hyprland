@@ -3,12 +3,40 @@
 #include "../../hyprctlCompat.hpp"
 #include "tests.hpp"
 
-static int  ret = 0;
+#include <chrono>
+#include <format>
+#include <thread>
 
-static void swar() {
-    OK(getFromSocket("/keyword layout:single_window_aspect_ratio 1 1"));
+#include <hyprutils/utils/ScopeGuard.hpp>
 
-    Tests::spawnKitty();
+using namespace Hyprutils::Utils;
+
+static bool waitForMonitor(const char* name) {
+    for (int i = 0; i < 50; ++i) {
+        if (getFromSocket("/monitors").contains(name))
+            return true;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    return false;
+}
+
+static bool waitForMonitorRemoved(const char* name) {
+    for (int i = 0; i < 50; ++i) {
+        if (!getFromSocket("/monitors").contains(name))
+            return true;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    return false;
+}
+
+TEST_CASE(single_window_aspect_ratio) {
+    OK(getFromSocket("/eval hl.config({ layout = { single_window_aspect_ratio = '1 1' } })"));
+
+    SPAWN_KITTY("a");
 
     {
         auto str = getFromSocket("/activewindow");
@@ -16,9 +44,9 @@ static void swar() {
         EXPECT_CONTAINS(str, "size: 1036,1036");
     }
 
-    Tests::spawnKitty();
+    SPAWN_KITTY("a");
 
-    OK(getFromSocket("/dispatch killwindow activewindow"));
+    OK(getFromSocket("/dispatch hl.dsp.window.kill({ window = 'activewindow' })"));
 
     Tests::waitUntilWindowsN(1);
 
@@ -29,44 +57,76 @@ static void swar() {
     }
 
     // don't use swar on maximized
-    OK(getFromSocket("/dispatch fullscreen 1"));
+    OK(getFromSocket("/dispatch hl.dsp.window.fullscreen({ mode = 'maximized' })"));
 
     {
         auto str = getFromSocket("/activewindow");
         EXPECT_CONTAINS(str, "at: 22,22");
         EXPECT_CONTAINS(str, "size: 1876,1036");
     }
-
-    // clean up
-    NLog::log("{}Killing all windows", Colors::YELLOW);
-    Tests::killAllWindows();
 }
 
 // Don't crash when focus after global geometry changes
-static void testCrashOnGeomUpdate() {
-    Tests::spawnKitty();
-    Tests::spawnKitty();
-    Tests::spawnKitty();
+TEST_CASE(crashOnGeomUpdate) {
+    SPAWN_KITTY("a");
+    SPAWN_KITTY("a");
+    SPAWN_KITTY("a");
 
     // move the layout
-    OK(getFromSocket("/keyword monitor HEADLESS-2,1920x1080@60,1000x0,1"));
+    OK(getFromSocket("/eval hl.monitor({ output = 'HEADLESS-2', mode = '1920x1080@60', position = '1000x0', scale = '1' })"));
 
     // shouldnt crash
-    OK(getFromSocket("/dispatch movefocus r"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ direction = 'right' })"));
 
-    OK(getFromSocket("/reload"));
+    // restore HEADLESS-2 position so subsequent tests don't inherit the relocated monitor
+    OK(getFromSocket("/eval hl.monitor({ output = 'HEADLESS-2', mode = '1920x1080@60', position = '0x0', scale = '1' })"));
+}
 
-    NLog::log("{}Killing all windows", Colors::YELLOW);
-    Tests::killAllWindows();
+// Don't crash when a pending layout refresh runs after monitor teardown.
+TEST_CASE(layoutRefreshDuringMonitorTeardown) {
+    static constexpr const char* TEST_OUTPUT = "HEADLESS-5";
+
+    getFromSocket(std::format("/output remove {}", TEST_OUTPUT));
+    OK(getFromSocket(std::format("/output create headless {}", TEST_OUTPUT)));
+    ASSERT(waitForMonitor(TEST_OUTPUT), true);
+
+    CScopeGuard guard = {[&]() {
+        Tests::killAllWindows();
+        OK(getFromSocket(std::format("/eval hl.monitor({{ output = '{}', disabled = false, mode = '1920x1080@60', position = '1920x0', scale = '1' }})", TEST_OUTPUT)));
+        ASSERT(waitForMonitor(TEST_OUTPUT), true);
+        OK(getFromSocket(std::format("/output remove {}", TEST_OUTPUT)));
+        ASSERT(waitForMonitorRemoved(TEST_OUTPUT), true);
+        OK(getFromSocket("/reload"));
+    }};
+
+    OK(getFromSocket("/eval hl.monitor({ output = 'HEADLESS-2', mode = '1920x1080@60', position = '0x0', scale = '1' })"));
+    OK(getFromSocket(std::format("/eval hl.monitor({{ output = '{}', disabled = false, mode = '1920x1080@60', position = '1920x0', scale = '1' }})", TEST_OUTPUT)));
+    ASSERT(waitForMonitor(TEST_OUTPUT), true);
+
+    OK(getFromSocket(std::format("/dispatch hl.dsp.focus({{ monitor = '{}' }})", TEST_OUTPUT)));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '30' })"));
+    SPAWN_KITTY("layout_teardown_a");
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '31' })"));
+    SPAWN_KITTY("layout_teardown_b");
+
+    OK(getFromSocket("/dispatch hl.dsp.focus({ monitor = 'HEADLESS-2' })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '1' })"));
+
+    OK(getFromSocket(std::format("/eval hl.monitor({{ output = '{}', disabled = true }}); hl.config({{ general = {{ layout = 'master' }} }})", TEST_OUTPUT)));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    ASSERT_CONTAINS(getFromSocket("/version"), "Hyprland");
+    EXPECT_CONTAINS(getFromSocket("/monitors all"), TEST_OUTPUT);
 }
 
 // Test if size + pos is preserved after fs cycle
-static void testPosPreserve() {
-    Tests::spawnKitty();
+TEST_CASE(posPreserve) {
+    SPAWN_KITTY("kitty");
 
-    OK(getFromSocket("/dispatch setfloating class:kitty"));
-    OK(getFromSocket("/dispatch resizewindowpixel exact 1337 69, class:kitty"));
-    OK(getFromSocket("/dispatch movewindowpixel exact 420 420, class:kitty"));
+    OK(getFromSocket("/dispatch hl.dsp.window.float({ action = 'set', window = 'class:kitty' })"));
+    OK(getFromSocket("/dispatch hl.dsp.window.resize({ x = 1337, y = 69, window = 'class:kitty' })"));
+    OK(getFromSocket("/dispatch hl.dsp.window.move({ x = 420, y = 420, window = 'class:kitty' })"));
 
     {
         auto str = getFromSocket("/activewindow");
@@ -74,24 +134,15 @@ static void testPosPreserve() {
         EXPECT_CONTAINS(str, "size: 1337,69");
     }
 
-    OK(getFromSocket("/dispatch fullscreen"));
-    OK(getFromSocket("/dispatch fullscreen"));
+    OK(getFromSocket("/dispatch hl.dsp.window.fullscreen()"));
+    OK(getFromSocket("/dispatch hl.dsp.window.fullscreen()"));
 
     {
         auto str = getFromSocket("/activewindow");
         EXPECT_CONTAINS(str, "size: 1337,69");
     }
 
-    OK(getFromSocket("/dispatch movewindow r"));
-
-    {
-        auto str = getFromSocket("/activewindow");
-        EXPECT_CONTAINS(str, "at: 581,420");
-        EXPECT_CONTAINS(str, "size: 1337,69");
-    }
-
-    OK(getFromSocket("/dispatch fullscreen"));
-    OK(getFromSocket("/dispatch fullscreen"));
+    OK(getFromSocket("/dispatch hl.dsp.window.move({ direction = 'right' })"));
 
     {
         auto str = getFromSocket("/activewindow");
@@ -99,26 +150,45 @@ static void testPosPreserve() {
         EXPECT_CONTAINS(str, "size: 1337,69");
     }
 
-    NLog::log("{}Killing all windows", Colors::YELLOW);
-    Tests::killAllWindows();
+    OK(getFromSocket("/dispatch hl.dsp.window.fullscreen()"));
+    OK(getFromSocket("/dispatch hl.dsp.window.fullscreen()"));
+
+    {
+        auto str = getFromSocket("/activewindow");
+        EXPECT_CONTAINS(str, "at: 581,420");
+        EXPECT_CONTAINS(str, "size: 1337,69");
+    }
+
+    OK(getFromSocket("/eval hl.config({ binds = { allow_pin_fullscreen = true } })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '1' })"));
+    OK(getFromSocket("/dispatch hl.dsp.window.pin({ action = 'set', window = 'class:kitty' })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ workspace = '2' })"));
+    OK(getFromSocket("/dispatch hl.dsp.window.fullscreen()"));
+    OK(getFromSocket("/dispatch hl.dsp.window.fullscreen()"));
+
+    {
+        auto str = getFromSocket("/activewindow");
+        EXPECT_CONTAINS(str, "at: 581,420");
+        EXPECT_CONTAINS(str, "size: 1337,69");
+    }
 }
 
-static bool testFocusMRUAfterClose() {
+TEST_CASE(focusMRUAfterClose) {
     NLog::log("{}Testing focus after close (MRU order)", Colors::GREEN);
 
     OK(getFromSocket("/reload"));
-    OK(getFromSocket("/keyword dwindle:default_split_ratio 1.25"));
-    OK(getFromSocket("/keyword input:focus_on_close 2"));
+    OK(getFromSocket("/eval hl.config({ dwindle = { default_split_ratio = 1.25 } })"));
+    OK(getFromSocket("/eval hl.config({ input = { focus_on_close = 2 } })"));
 
-    EXPECT(!!Tests::spawnKitty("kitty_A"), true);
-    EXPECT(!!Tests::spawnKitty("kitty_B"), true);
-    EXPECT(!!Tests::spawnKitty("kitty_C"), true);
+    SPAWN_KITTY("kitty_A");
+    SPAWN_KITTY("kitty_B");
+    SPAWN_KITTY("kitty_C");
 
-    OK(getFromSocket("/dispatch focuswindow class:kitty_A"));
-    OK(getFromSocket("/dispatch focuswindow class:kitty_B"));
-    OK(getFromSocket("/dispatch focuswindow class:kitty_C"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:kitty_A' })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:kitty_B' })"));
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:kitty_C' })"));
 
-    OK(getFromSocket("/dispatch killactive"));
+    OK(getFromSocket("/dispatch hl.dsp.window.kill()"));
     Tests::waitUntilWindowsN(2);
 
     {
@@ -126,66 +196,29 @@ static bool testFocusMRUAfterClose() {
         EXPECT(str.contains("class: kitty_B"), true);
     }
 
-    OK(getFromSocket("/dispatch killactive"));
+    OK(getFromSocket("/dispatch hl.dsp.window.kill()"));
     Tests::waitUntilWindowsN(1);
 
     {
         auto str = getFromSocket("/activewindow");
         EXPECT(str.contains("class: kitty_A"), true);
     }
-
-    NLog::log("{}Killing all windows", Colors::YELLOW);
-    Tests::killAllWindows();
-    EXPECT(Tests::windowCount(), 0);
-    return true;
 }
 
-static bool testFocusPreservedLayoutChange() {
-    NLog::log("{}Testing focus is preserved on layout change", Colors::GREEN);
+TEST_CASE(focusPreservedLayoutChange) {
+    OK(getFromSocket("r/eval hl.config({ general = { layout = 'master' } })"));
 
-    OK(getFromSocket("/keyword general:layout master"));
+    SPAWN_KITTY("kitty_A");
+    SPAWN_KITTY("kitty_B");
+    SPAWN_KITTY("kitty_C");
+    SPAWN_KITTY("kitty_D");
 
-    EXPECT(!!Tests::spawnKitty("kitty_A"), true);
-    EXPECT(!!Tests::spawnKitty("kitty_B"), true);
-    EXPECT(!!Tests::spawnKitty("kitty_C"), true);
-    EXPECT(!!Tests::spawnKitty("kitty_D"), true);
+    OK(getFromSocket("/dispatch hl.dsp.focus({ window = 'class:kitty_C' })"));
 
-    OK(getFromSocket("/dispatch focuswindow class:kitty_C"));
-
-    OK(getFromSocket("/keyword general:layout monocle"));
+    OK(getFromSocket("r/eval hl.config({ general = { layout = 'monocle' } })"));
 
     {
         auto str = getFromSocket("/activewindow");
         EXPECT(str.contains("class: kitty_C"), true);
     }
-
-    NLog::log("{}Killing all windows", Colors::YELLOW);
-    Tests::killAllWindows();
-    EXPECT(Tests::windowCount(), 0);
-    return true;
 }
-
-static bool test() {
-    NLog::log("{}Testing layout generic", Colors::GREEN);
-
-    // setup
-    OK(getFromSocket("/dispatch workspace 10"));
-
-    // test
-    NLog::log("{}Testing `single_window_aspect_ratio`", Colors::GREEN);
-    swar();
-
-    testCrashOnGeomUpdate();
-    testPosPreserve();
-    testFocusMRUAfterClose();
-    testFocusPreservedLayoutChange();
-
-    // clean up
-    NLog::log("Cleaning up", Colors::YELLOW);
-    OK(getFromSocket("/dispatch workspace 1"));
-    OK(getFromSocket("/reload"));
-
-    return !ret;
-}
-
-REGISTER_TEST_FN(test);

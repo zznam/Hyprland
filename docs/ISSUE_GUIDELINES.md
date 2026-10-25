@@ -2,15 +2,15 @@
 
 First of all, please remember to:
 - Check that your issue is not a duplicate
-- Read the [FAQ](https://wiki.hypr.land/FAQ/)
-- Read the [Configuring Page](https://wiki.hypr.land/Configuring/)
+- Read the [FAQ](https://wiki.hypr.land/faq/)
+- Read the [Configuring Page](https://wiki.hypr.land/configuring/)
 
 <br/>
 
 # Reporting suggestions
 Suggestions are welcome.
 
-Many features can be implemented using bash scripts and Hyprland sockets, read up on those [Here](https://wiki.hypr.land/IPC). Please do not suggest features that can be implemented as such.
+Many features can be implemented using bash scripts and Hyprland sockets, read up on those [Here](https://wiki.hypr.land/ipc/). Please do not suggest features that can be implemented as such.
 
 <br/>
 
@@ -71,7 +71,7 @@ A debug coredump provides more information for debugging and may speed up the pr
 Make sure you're on latest git. Run `git pull --recurse-submodules` to sync everything.
 
 1. [Compile Hyprland with debug mode](http://wiki.hypr.land/Contributing-and-Debugging/#build-in-debug-mode)
-> Note: The config file used will be `hyprlandd.conf` instead of `hyprland.conf`
+> Note: The config file used will be `hyprlandd.lua` instead of `hyprland.lua`
 
 2. `cd ~`
 3. For your own convenience, launch Hyprland from a tty with the envvar `ASAN_OPTIONS="log_path=asan.log" ~/path/to/Hyprland`

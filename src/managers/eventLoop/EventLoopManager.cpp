@@ -16,6 +16,17 @@ using namespace Hyprutils::OS;
 
 #define TIMESPEC_NSEC_PER_SEC 1000000000L
 
+static uint64_t LAST_DO_LATER_SEQ = 1;
+
+SEventLoopDoLaterLock::SEventLoopDoLaterLock(uint64_t seq_) : seq(seq_) {
+    ;
+}
+
+SEventLoopDoLaterLock::~SEventLoopDoLaterLock() {
+    if (g_pEventLoopManager && seq > 0)
+        g_pEventLoopManager->removeDoLater(seq);
+}
+
 CEventLoopManager::CEventLoopManager(wl_display* display, wl_event_loop* wlEventLoop) {
     m_timers.timerfd  = CFileDescriptor{timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC)};
     m_wayland.loop    = wlEventLoop;
@@ -39,11 +50,11 @@ CEventLoopManager::~CEventLoopManager() {
 
 static int timerWrite(int fd, uint32_t mask, void* data) {
     if (!CFileDescriptor::isReadable(fd))
-        Log::logger->log(Log::ERR, "timerWrite: triggered a non readable event on fd : {}", fd);
+        LOG(Log::ERR, "timerWrite: triggered a non readable event on fd : {}", fd);
     else {
         uint64_t expirations;
         if (read(fd, &expirations, sizeof(expirations)) < 0)
-            Log::logger->log(Log::ERR, "timerWrite: read failed on fd {}: {}", fd, strerror(errno));
+            LOG(Log::ERR, "timerWrite: read failed on fd {}: {}", fd, strerror(errno));
     }
 
     g_pEventLoopManager->onTimerFire();
@@ -62,15 +73,15 @@ static int configWatcherWrite(int fd, uint32_t mask, void* data) {
 }
 
 static int handleWaiterFD(int fd, uint32_t mask, void* data) {
-    auto waiter = sc<CEventLoopManager::SReadableWaiter*>(data);
+    auto waiter = sc<SReadableWaiter*>(data);
 
     if (!waiter) {
-        Log::logger->log(Log::ERR, "handleWaiterFD: failed casting waiter");
+        LOG(Log::ERR, "handleWaiterFD: failed casting waiter");
         return 0;
     }
 
     if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) {
-        Log::logger->log(Log::ERR, "handleWaiterFD: readable waiter error");
+        LOG(Log::ERR, "handleWaiterFD: readable waiter error");
         g_pEventLoopManager->onFdReadableFail(waiter);
         return 0;
     }
@@ -125,7 +136,7 @@ void CEventLoopManager::enterLoop() {
 
     wl_display_run(m_wayland.display);
 
-    Log::logger->log(Log::DEBUG, "Kicked off the event loop! :(");
+    LOG(Log::DEBUG, "Kicked off the event loop! :(");
 }
 
 void CEventLoopManager::onTimerFire() {
@@ -201,11 +212,13 @@ void CEventLoopManager::nudgeTimers() {
     timerfd_settime(m_timers.timerfd.get(), TFD_TIMER_ABSTIME, &ts, nullptr);
 }
 
-void CEventLoopManager::doLater(const std::function<void()>& fn) {
-    m_idle.fns.emplace_back(fn);
+uint64_t CEventLoopManager::doLater(const std::function<void()>& fn) {
+    const uint64_t NEW_SEQ = ++LAST_DO_LATER_SEQ;
+
+    m_idle.fns.emplace_back(NEW_SEQ, fn);
 
     if (m_idle.eventSource)
-        return;
+        return NEW_SEQ;
 
     m_idle.eventSource = wl_event_loop_add_idle(
         m_wayland.loop,
@@ -215,21 +228,46 @@ void CEventLoopManager::doLater(const std::function<void()>& fn) {
             IDLE->fns.clear();
             IDLE->eventSource = nullptr;
             for (auto& f : fns) {
-                if (f)
-                    f();
+                if (f.second)
+                    f.second();
             }
         },
         &m_idle);
+
+    return NEW_SEQ;
 }
 
-void CEventLoopManager::doOnReadable(CFileDescriptor fd, std::function<void()>&& fn) {
+void CEventLoopManager::removeDoLater(uint64_t seq) {
+    std::erase_if(m_idle.fns, [&seq](const auto& e) { return e.first == seq; });
+
+    if (m_idle.fns.empty() && m_idle.eventSource) {
+        wl_event_source_remove(m_idle.eventSource);
+        m_idle.eventSource = nullptr;
+    }
+}
+
+UP<SEventLoopDoLaterLock> CEventLoopManager::doLaterLock(const std::function<void()>& fn) {
+    return makeUnique<SEventLoopDoLaterLock>(doLater(fn));
+}
+
+WP<SReadableWaiter> CEventLoopManager::doOnReadable(CFileDescriptor fd, std::function<void()>&& fn) {
     if (!fd.isValid() || fd.isReadable()) {
         fn();
-        return;
+        return nullptr;
     }
 
     auto& waiter   = m_readableWaiters.emplace_back(makeUnique<SReadableWaiter>(nullptr, std::move(fd), std::move(fn)));
     waiter->source = wl_event_loop_add_fd(g_pEventLoopManager->m_wayland.loop, waiter->fd.get(), WL_EVENT_READABLE, ::handleWaiterFD, waiter.get());
+
+    return waiter;
+}
+
+void CEventLoopManager::removeReadableWaiter(const WP<SReadableWaiter>& waiter) {
+    if (!waiter)
+        return;
+
+    // erasing the owning UP runs ~SReadableWaiter, which removes the wl_event_source.
+    std::erase_if(m_readableWaiters, [&waiter](const UP<SReadableWaiter>& w) { return waiter == w; });
 }
 
 void CEventLoopManager::syncPollFDs() {

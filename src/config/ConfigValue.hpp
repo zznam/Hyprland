@@ -2,42 +2,67 @@
 
 #include <string>
 #include <typeindex>
+#include <typeinfo>
 #include <hyprlang.hpp>
 #include "../macros.hpp"
+#include "../config/shared/complex/ComplexDataType.hpp"
+#include "../config/shared/Types.hpp"
+
+// Welcome to wonky fucking pointer + type hell
+// Enjoy your stay
 
 // giga hack to avoid including configManager here
 // NOLINTNEXTLINE
-void            local__configValuePopulate(void* const** p, const std::string& val);
+void            local__configValuePopulate(void* const** p, void* const** hlangp, const bool** setByUser, std::type_index* ti, const std::string& val);
 std::type_index local__configValueTypeIdx(const std::string& val);
 
-template <typename T>
-class CConfigValue {
+class CConfigValueBase {
+  protected:
+    std::string     m_valueName;
+    void* const*    m_p         = nullptr;
+    void* const*    m_hlangp    = nullptr;
+    std::type_index m_typeIndex = typeid(void);
+    const bool*     m_setByUser = nullptr;
+
+    CConfigValueBase();
+    ~CConfigValueBase();
+
+    void populateFromName();
+    void bindInternal(const std::string& val);
+
   public:
-    CConfigValue(const std::string& val) {
-#ifdef HYPRLAND_DEBUG
-        // verify type
-        const auto TYPE = local__configValueTypeIdx(val);
+    static std::vector<CConfigValueBase*>& registry();
+    static void                            flushCaches();
+};
 
-        // exceptions
-        const bool STRINGEX = (typeid(T) == typeid(std::string) && TYPE == typeid(Hyprlang::STRING));
-        const bool CUSTOMEX = (typeid(T) == typeid(Hyprlang::CUSTOMTYPE) && (TYPE == typeid(Hyprlang::CUSTOMTYPE*) || TYPE == typeid(void*) /* dunno why it does this? */));
+template <typename T>
+class CConfigValue : private CConfigValueBase {
+  public:
+    // creates an empty value. Deref'ing this will be a crash
+    CConfigValue() = default;
+    explicit CConfigValue(const std::string& val) {
+        bind(val);
+    }
 
-        RASSERT(typeid(T) == TYPE || STRINGEX || CUSTOMEX, "Mismatched type in CConfigValue<T>, got {} but has {}", typeid(T).name(), TYPE.name());
-#endif
-
-        local__configValuePopulate(&p_, val);
+    void bind(const std::string& val) {
+        bindInternal(val);
     }
 
     T* ptr() const {
-        return *rc<T* const*>(p_);
+        return *rc<T* const*>(m_p);
     }
 
     T operator*() const {
         return *ptr();
     }
 
-  private:
-    void* const* p_ = nullptr;
+    bool good() const {
+        return m_p || m_hlangp;
+    }
+
+    bool setByUser() const {
+        return *m_setByUser;
+    }
 };
 
 template <>
@@ -48,26 +73,30 @@ inline std::string* CConfigValue<std::string>::ptr() const {
 
 template <>
 inline std::string CConfigValue<std::string>::operator*() const {
-    return std::string{*rc<const Hyprlang::STRING*>(p_)};
+    if (m_typeIndex == typeid(std::string))
+        return **rc<const std::string* const*>(m_p);
+    else if (m_typeIndex == typeid(const char*))
+        return std::string{*rc<const Hyprlang::STRING*>(m_hlangp)};
+    else
+        RASSERT(false, "CConfigValue<std::string> on a FUCKED type");
+    return "FUCK";
 }
 
 template <>
-inline Hyprlang::STRING* CConfigValue<Hyprlang::STRING>::ptr() const {
-    return rc<Hyprlang::STRING*>(*p_);
+inline Config::INTEGER CConfigValue<Config::INTEGER>::operator*() const {
+    if (m_typeIndex == typeid(bool))
+        return **rc<const bool* const*>(m_p);
+    else if (m_typeIndex == typeid(Config::INTEGER))
+        return **rc<const Config::INTEGER* const*>(m_p);
+    else
+        RASSERT(false, "CConfigValue<Config::INTEGER> on a FUCKED type");
+    return -1;
 }
 
 template <>
-inline Hyprlang::STRING CConfigValue<Hyprlang::STRING>::operator*() const {
-    return *rc<const Hyprlang::STRING*>(p_);
-}
-
-template <>
-inline Hyprlang::CUSTOMTYPE* CConfigValue<Hyprlang::CUSTOMTYPE>::ptr() const {
-    return *rc<Hyprlang::CUSTOMTYPE* const*>(p_);
-}
-
-template <>
-inline Hyprlang::CUSTOMTYPE CConfigValue<Hyprlang::CUSTOMTYPE>::operator*() const {
-    RASSERT(false, "Impossible to implement operator* of CConfigValue<Hyprlang::CUSTOMTYPE>, use ptr()");
-    return *ptr();
+inline Config::IComplexConfigValue* CConfigValue<Config::IComplexConfigValue>::ptr() const {
+    if (m_hlangp)
+        return rc<Config::IComplexConfigValue*>((*rc<Hyprlang::CUSTOMTYPE* const*>(m_hlangp))->getData());
+    else
+        return *rc<Config::IComplexConfigValue* const*>(m_p);
 }

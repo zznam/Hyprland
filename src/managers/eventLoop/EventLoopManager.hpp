@@ -14,6 +14,36 @@ namespace Aquamarine {
     struct SPollFD;
 };
 
+struct SEventLoopDoLaterLock {
+    SEventLoopDoLaterLock(uint64_t seq);
+    ~SEventLoopDoLaterLock();
+
+    uint64_t seq = 0;
+};
+
+struct SReadableWaiter {
+    wl_event_source*               source;
+    Hyprutils::OS::CFileDescriptor fd;
+    std::function<void()>          fn;
+
+    SReadableWaiter(wl_event_source* src, Hyprutils::OS::CFileDescriptor f, std::function<void()> func) : source(src), fd(std::move(f)), fn(std::move(func)) {}
+
+    ~SReadableWaiter() {
+        if (source) {
+            wl_event_source_remove(source);
+            source = nullptr;
+        }
+    }
+
+    // copy
+    SReadableWaiter(const SReadableWaiter&)            = delete;
+    SReadableWaiter& operator=(const SReadableWaiter&) = delete;
+
+    // move
+    SReadableWaiter(SReadableWaiter&& other) noexcept            = default;
+    SReadableWaiter& operator=(SReadableWaiter&& other) noexcept = default;
+};
+
 class CEventLoopManager {
   public:
     CEventLoopManager(wl_display* display, wl_event_loop* wlEventLoop);
@@ -30,42 +60,22 @@ class CEventLoopManager {
     // schedules a recalc of the timers
     void scheduleRecalc();
 
-    // schedules a function to run later, aka in a wayland idle event.
-    void doLater(const std::function<void()>& fn);
+    // schedules a function to run later, aka in a wayland idle event. Returns a sequence which can be used to remove it.
+    uint64_t doLater(const std::function<void()>& fn);
+    void     removeDoLater(uint64_t seq);
+
+    // automatically cleaned up doLater instance
+    [[nodiscard]] UP<SEventLoopDoLaterLock> doLaterLock(const std::function<void()>& fn);
 
     struct SIdleData {
-        wl_event_source*                   eventSource = nullptr;
-        std::vector<std::function<void()>> fns;
+        wl_event_source*                                        eventSource = nullptr;
+        std::vector<std::pair<uint64_t, std::function<void()>>> fns;
     };
 
-    struct SReadableWaiter {
-        wl_event_source*               source;
-        Hyprutils::OS::CFileDescriptor fd;
-        std::function<void()>          fn;
-
-        SReadableWaiter(wl_event_source* src, Hyprutils::OS::CFileDescriptor f, std::function<void()> func) : source(src), fd(std::move(f)), fn(std::move(func)) {}
-
-        ~SReadableWaiter() {
-            if (source) {
-                wl_event_source_remove(source);
-                source = nullptr;
-            }
-        }
-
-        // copy
-        SReadableWaiter(const SReadableWaiter&)            = delete;
-        SReadableWaiter& operator=(const SReadableWaiter&) = delete;
-
-        // move
-        SReadableWaiter(SReadableWaiter&& other) noexcept            = default;
-        SReadableWaiter& operator=(SReadableWaiter&& other) noexcept = default;
-    };
-
-    // schedule function to when fd is readable (WL_EVENT_READABLE / POLLIN),
-    // takes ownership of fd
-    void doOnReadable(Hyprutils::OS::CFileDescriptor fd, std::function<void()>&& fn);
-    void onFdReadable(SReadableWaiter* waiter);
-    void onFdReadableFail(SReadableWaiter* waiter);
+    WP<SReadableWaiter> doOnReadable(Hyprutils::OS::CFileDescriptor fd, std::function<void()>&& fn);
+    void                removeReadableWaiter(const WP<SReadableWaiter>& waiter);
+    void                onFdReadable(SReadableWaiter* waiter);
+    void                onFdReadableFail(SReadableWaiter* waiter);
 
   private:
     // Manages the event sources after AQ pollFDs change.

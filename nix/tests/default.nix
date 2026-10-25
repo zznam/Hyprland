@@ -43,7 +43,7 @@ in
         };
 
         # Test configuration
-        environment.etc."test.conf".source = "${hyprland}/share/hypr/test.conf";
+        environment.etc."test.lua".source = "${hyprland}/share/hypr/test.lua";
 
         # Disable portals
         xdg.portal.enable = pkgs.lib.mkForce false;
@@ -87,7 +87,7 @@ in
 
       # Run hyprtester testing framework/suite
       print("Running hyprtester")
-      exit_status, _out = machine.execute("su - alice -c 'hyprtester -b ${hyprland}/bin/Hyprland -c /etc/test.conf -p ${hyprland}/lib/hyprtestplugin.so 2>&1 | tee /tmp/testerlog; exit ''${PIPESTATUS[0]}'")
+      exit_status, _out = machine.execute("su - alice -c 'hyprtester -b ${hyprland}/bin/Hyprland -c /etc/test.lua -p ${hyprland}/lib/hyprtestplugin.so 2>&1 | tee /tmp/testerlog; exit ''${PIPESTATUS[0]}'")
       print(f"Hyprtester exited with {exit_status}")
 
       # Print logs for visibility in CI
@@ -97,10 +97,11 @@ in
       # Copy logs to host
       machine.execute('cp "$(find /tmp/hypr -name *.log | head -1)" /tmp/hyprlog')
       machine.execute(f'echo {exit_status} > /tmp/exit_status')
-      machine.copy_from_vm("/tmp/gtestslog")
-      machine.copy_from_vm("/tmp/testerlog")
-      machine.copy_from_vm("/tmp/hyprlog")
-      machine.copy_from_vm("/tmp/exit_status")
+      machine.copy_from_machine("/tmp/gtestslog")
+      machine.copy_from_machine("/tmp/testerlog")
+      machine.copy_from_machine("/tmp/hyprlog")
+      machine.copy_from_machine("/tmp/exit_status")
+      machine.copy_from_machine("/tmp/exit_status_gtests")
 
       # Finally - shutdown
       machine.shutdown()

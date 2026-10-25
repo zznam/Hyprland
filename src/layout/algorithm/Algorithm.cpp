@@ -4,10 +4,10 @@
 #include "TiledAlgorithm.hpp"
 #include "../target/WindowTarget.hpp"
 #include "../space/Space.hpp"
-#include "../../desktop/view/Window.hpp"
+#include "../../desktop/view/window/Window.hpp"
 #include "../../desktop/history/WindowHistoryTracker.hpp"
 #include "../../desktop/state/FocusState.hpp"
-#include "../../helpers/Monitor.hpp"
+#include "../../output/Monitor.hpp"
 #include "../../render/Renderer.hpp"
 
 #include "../../debug/log/Logger.hpp"
@@ -56,7 +56,7 @@ void CAlgorithm::removeTarget(SP<ITarget> target) {
         return;
     }
 
-    Log::logger->log(Log::ERR, "BUG THIS: CAlgorithm::removeTarget, but not found");
+    LOG(Log::ERR, "BUG THIS: CAlgorithm::removeTarget, but not found");
 }
 
 void CAlgorithm::moveTarget(SP<ITarget> target, std::optional<Vector2D> focalPoint, bool reposition) {
@@ -101,30 +101,9 @@ size_t CAlgorithm::floatingTargets() const {
     return m_floatingTargets.size();
 }
 
-void CAlgorithm::recalculate() {
-    m_tiled->recalculate();
-    m_floating->recalculate();
-
-    const auto PWORKSPACE = m_space->workspace();
-    if (!PWORKSPACE)
-        return;
-
-    const auto PMONITOR = PWORKSPACE->m_monitor;
-
-    if (PWORKSPACE->m_hasFullscreenWindow && PMONITOR) {
-        // massive hack from the fullscreen func
-        const auto PFULLWINDOW = PWORKSPACE->getFullscreenWindow();
-
-        if (PFULLWINDOW) {
-            if (PWORKSPACE->m_fullscreenMode == FSMODE_FULLSCREEN) {
-                *PFULLWINDOW->m_realPosition = PMONITOR->m_position;
-                *PFULLWINDOW->m_realSize     = PMONITOR->m_size;
-            } else if (PWORKSPACE->m_fullscreenMode == FSMODE_MAXIMIZED)
-                PFULLWINDOW->layoutTarget()->setPositionGlobal(m_space->workArea());
-        }
-
-        return;
-    }
+void CAlgorithm::recalculate(eRecalculateReason reason) {
+    m_tiled->recalculate(reason);
+    m_floating->recalculate(reason);
 }
 
 void CAlgorithm::recenter(SP<ITarget> t) {
@@ -132,7 +111,7 @@ void CAlgorithm::recenter(SP<ITarget> t) {
         m_floating->recenter(t);
 }
 
-std::expected<void, std::string> CAlgorithm::layoutMsg(const std::string_view& sv) {
+Config::ErrorResult CAlgorithm::layoutMsg(const std::string_view& sv) {
     if (const auto ret = m_floating->layoutMsg(sv); !ret)
         return ret;
     return m_tiled->layoutMsg(sv);
@@ -255,7 +234,7 @@ SP<ITarget> CAlgorithm::getNextCandidate(SP<ITarget> old) {
     if (old->floating() || *FOCUSONCLOSE == 2) {
         // use window history to determine best target
         for (const auto& w : Desktop::History::windowTracker()->fullHistory() | std::views::reverse) {
-            if (!w->m_workspace || w->m_workspace->m_space != m_space || !w->layoutTarget() || !w->layoutTarget()->space())
+            if (!w->m_workspace || w->m_workspace->space() != m_space || !w->layoutTarget() || !w->layoutTarget()->space())
                 continue;
 
             return w->layoutTarget();

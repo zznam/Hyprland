@@ -1,12 +1,14 @@
 #pragma once
+#include "../../shared.hpp"
 
+#include <memory>
 #include <vector>
-#include <functional>
 
-inline std::vector<std::function<bool()>> clientTestFns;
+inline std::vector<std::shared_ptr<CTestCase>> clientTestCases;
 
-#define REGISTER_CLIENT_TEST_FN(fn)                                                                                                                                                \
-    static auto _register_fn = [] {                                                                                                                                                \
-        clientTestFns.emplace_back(fn);                                                                                                                                            \
-        return 1;                                                                                                                                                                  \
-    }();
+#ifndef INCLUDED_FROM_MAIN
+// What this group of tests is called
+#define TEST_GROUP_NAME "clients"
+// Where our group's test cases will be stored
+#define GROUP_TEST_CASE_STORAGE clientTestCases
+#endif // !defined(INCLUDED_FROM_MAIN)

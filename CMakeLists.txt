@@ -34,6 +34,7 @@ if(NOT HYPR_SHADER_GEN_RESULT EQUAL 0)
 endif()
 
 find_package(PkgConfig REQUIRED)
+find_package(Python3 COMPONENTS Interpreter QUIET)
 
 # Try to find canihavesomecoffee's udis86 using pkgconfig vmd/udis86 does not
 # provide a .pc file and won't be detected this way
@@ -103,13 +104,13 @@ add_compile_options(
   -Wall
   -Wextra
   -Wpedantic
+  -Wno-keyword-macro
+  -Wno-unused-result
   -Wno-unused-parameter
   -Wno-unused-value
   -Wno-missing-field-initializers
-  -Wno-gnu-zero-variadic-macro-arguments
   -Wno-narrowing
   -Wno-pointer-arith
-  -Wno-clobbered
   -frtti
   -fmacro-prefix-map=${CMAKE_SOURCE_DIR}/=)
 
@@ -127,10 +128,26 @@ set(GLES_VERSION "GLES3")
 find_package(OpenGL REQUIRED COMPONENTS ${GLES_VERSION})
 find_package(glslang CONFIG REQUIRED)
 
-set(AQUAMARINE_MINIMUM_VERSION 0.9.3)
+find_package(glaze QUIET)
+if(NOT CMAKE_SYSTEM_NAME MATCHES "OpenBSD")
+  if(NOT glaze_FOUND)
+    set(GLAZE_VERSION v7.2.0)
+    message(STATUS "glaze dependency not found, retrieving ${GLAZE_VERSION} with FetchContent")
+    include(FetchContent)
+    FetchContent_Declare(
+      glaze
+      GIT_REPOSITORY https://github.com/stephenberry/glaze.git
+      GIT_TAG ${GLAZE_VERSION}
+      GIT_SHALLOW TRUE
+      EXCLUDE_FROM_ALL)
+    FetchContent_MakeAvailable(glaze)
+  endif()
+endif()
+
+set(AQUAMARINE_MINIMUM_VERSION 0.15.0)
 set(HYPRLANG_MINIMUM_VERSION 0.6.7)
 set(HYPRCURSOR_MINIMUM_VERSION 0.1.7)
-set(HYPRUTILS_MINIMUM_VERSION 0.11.1)
+set(HYPRUTILS_MINIMUM_VERSION 0.14.3)
 set(HYPRGRAPHICS_MINIMUM_VERSION 0.5.1)
 
 pkg_check_modules(aquamarine_dep REQUIRED IMPORTED_TARGET aquamarine>=${AQUAMARINE_MINIMUM_VERSION})
@@ -246,11 +263,10 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/src/version.h PROPERTIES GENERAT
 
 set(XKBCOMMON_MINIMUM_VERSION 1.11.0)
 set(WAYLAND_SERVER_MINIMUM_VERSION 1.22.91)
-set(WAYLAND_SERVER_PROTOCOLS_MINIMUM_VERSION 1.47)
-set(LIBINPUT_MINIMUM_VERSION 1.28)
+set(WAYLAND_SERVER_PROTOCOLS_MINIMUM_VERSION 1.49)
+set(LIBINPUT_MINIMUM_VERSION 1.29)
 
-pkg_check_modules(
-  deps
+pkg_check_modules(deps
   REQUIRED
   IMPORTED_TARGET GLOBAL
   xkbcommon>=${XKBCOMMON_MINIMUM_VERSION}
@@ -264,11 +280,16 @@ pkg_check_modules(
   xcursor
   libdrm
   libinput>=${LIBINPUT_MINIMUM_VERSION}
+  libeis-1.0
   gbm
   gio-2.0
   re2
   muparser
-  lcms2)
+  lcms2
+  libcanberra
+)
+
+pkg_search_module(LUA REQUIRED IMPORTED_TARGET GLOBAL lua55 lua5.5 lua-55 lua-5.5 lua>=5.5 lua<5.6)
 
 find_package(hyprwayland-scanner 0.3.10 REQUIRED)
 
@@ -286,8 +307,9 @@ add_library(hyprland_lib STATIC ${SRCFILES})
 add_executable(Hyprland src/main.cpp ${TRACY_CPP_FILES})
 target_link_libraries(Hyprland hyprland_lib)
 
-target_include_directories(hyprland_lib PUBLIC ${deps_INCLUDE_DIRS})
-target_include_directories(Hyprland PUBLIC ${deps_INCLUDE_DIRS})
+target_include_directories(hyprland_lib PUBLIC ${deps_INCLUDE_DIRS} ${LUA_INCLUDE_DIRS})
+target_include_directories(Hyprland PUBLIC ${deps_INCLUDE_DIRS} ${LUA_INCLUDE_DIRS})
+target_link_libraries(hyprland_lib PRIVATE glaze::glaze)
 
 set(USE_GPROF OFF)
 
@@ -354,6 +376,15 @@ if(NOT HAS_INOTIFY AND inotify_FOUND)
   target_link_libraries(hyprland_lib PUBLIC PkgConfig::inotify)
 endif()
 
+# sdbus-c++ is used to ask rtkit for realtime scheduling which is Linux-only
+if(NO_RTKIT OR NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(STATUS "rtkit realtime scheduling is disabled!")
+else()
+  pkg_check_modules(sdbus_dep REQUIRED IMPORTED_TARGET sdbus-c++>=2.0.0)
+  target_link_libraries(hyprland_lib PUBLIC PkgConfig::sdbus_dep)
+  add_compile_definitions(HAS_RTKIT)
+endif()
+
 if(NO_XWAYLAND)
   message(STATUS "Using the NO_XWAYLAND flag, disabling XWayland!")
   add_compile_definitions(NO_XWAYLAND)
@@ -388,6 +419,9 @@ else()
   message(STATUS "SYSTEMD support is requested (NO_SYSTEMD not defined)...")
   add_compile_definitions(USES_SYSTEMD)
 
+  install(FILES ${CMAKE_SOURCE_DIR}/systemd/hyprland-session.target
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}/systemd/user)
+
   # session file -uwsm
   if(NO_UWSM)
     message(STATUS "UWSM support is disabled...")
@@ -421,6 +455,7 @@ target_link_libraries(
   PkgConfig::hyprcursor_dep
   PkgConfig::hyprgraphics_dep
   PkgConfig::deps
+  PkgConfig::LUA
 )
 
 target_link_libraries(
@@ -437,6 +472,28 @@ endif()
 
 # used by `make installheaders`, to ensure the headers are generated
 add_custom_target(generate-protocol-headers)
+
+if(Python3_Interpreter_FOUND)
+  add_custom_target(
+    generate-lua-stubs ALL
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/meta/generateLuaStubs.py --root ${CMAKE_SOURCE_DIR}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Generating Lua API stubs for LuaLS"
+    VERBATIM)
+
+  add_dependencies(hyprland_lib generate-lua-stubs)
+  add_dependencies(Hyprland generate-lua-stubs)
+
+  add_custom_target(
+    check-lua-stubs
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/meta/generateLuaStubs.py --root ${CMAKE_SOURCE_DIR} --check
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Checking Lua API stubs are up to date"
+    VERBATIM)
+else()
+  message(FATAL_ERROR "Python3 interpreter not found, which is required for the build")
+endif()
+
 set(PROTOCOL_SOURCES "")
 
 function(protocolnew protoPath protoName external)
@@ -485,14 +542,9 @@ else()
   target_link_libraries(hyprland_lib PUBLIC OpenGL::EGL OpenGL::GLES3 glslang::glslang glslang::glslang-default-resource-limits glslang::SPIRV Threads::Threads)
 endif()
 
-pkg_check_modules(hyprland_protocols_dep hyprland-protocols>=0.6.4)
-if(hyprland_protocols_dep_FOUND)
-  pkg_get_variable(HYPRLAND_PROTOCOLS hyprland-protocols pkgdatadir)
-  message(STATUS "hyprland-protocols dependency set to ${HYPRLAND_PROTOCOLS}")
-else()
-  set(HYPRLAND_PROTOCOLS "subprojects/hyprland-protocols")
-  message(STATUS "hyprland-protocols subproject set to ${HYPRLAND_PROTOCOLS}")
-endif()
+pkg_check_modules(hyprland_protocols_dep REQUIRED hyprland-protocols>=0.8.0)
+pkg_get_variable(HYPRLAND_PROTOCOLS hyprland-protocols pkgdatadir)
+message(STATUS "hyprland-protocols dependency set to ${HYPRLAND_PROTOCOLS}")
 
 protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-global-shortcuts-v1"
             true)
@@ -508,6 +560,7 @@ protocolnew("protocols" "wlr-virtual-pointer-unstable-v1" true)
 protocolnew("protocols" "input-method-unstable-v2" true)
 protocolnew("protocols" "wlr-output-management-unstable-v1" true)
 protocolnew("protocols" "kde-server-decoration" true)
+protocolnew("protocols" "vicinae-hotkey-v1" true)
 protocolnew("protocols" "wlr-data-control-unstable-v1" true)
 protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-focus-grab-v1" true)
 protocolnew("protocols" "wlr-layer-shell-unstable-v1" true)
@@ -515,8 +568,8 @@ protocolnew("protocols" "wayland-drm" true)
 protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-ctm-control-v1" true)
 protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-surface-v1" true)
 protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-lock-notify-v1" true)
-protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-toplevel-mapping-v1"
-            true)
+protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-toplevel-mapping-v1" true)
+protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-workspace-image-capture-source-v1" true)
 
 protocolnew("staging/tearing-control" "tearing-control-v1" false)
 protocolnew("staging/fractional-scale" "fractional-scale-v1" false)
@@ -561,7 +614,10 @@ protocolnew("staging/fifo" "fifo-v1" false)
 protocolnew("staging/commit-timing" "commit-timing-v1" false)
 protocolnew("staging/ext-image-capture-source" "ext-image-capture-source-v1" false)
 protocolnew("staging/ext-image-copy-capture" "ext-image-copy-capture-v1" false)
+protocolnew("staging/ext-background-effect" "ext-background-effect-v1" false)
 
+protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-input-capture-v1"
+            true)
 protocolwayland()
 
 # tools
@@ -574,6 +630,12 @@ else()
   add_subdirectory(hyprpm)
   message(STATUS "hyprpm is enabled (NO_HYPRPM not defined)")
 endif()
+
+# Set proper permissions for directories, otherwise they could end up 700
+set(CMAKE_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS
+    OWNER_READ OWNER_WRITE OWNER_EXECUTE
+    GROUP_READ GROUP_EXECUTE
+    WORLD_READ WORLD_EXECUTE)
 
 # binary and symlink
 install(TARGETS Hyprland)
@@ -601,9 +663,13 @@ file(GLOB_RECURSE INSTALLABLE_ASSETS "assets/install/*")
 install(FILES ${INSTALLABLE_ASSETS}
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/hypr)
 
-# default config
-install(FILES ${CMAKE_SOURCE_DIR}/example/hyprland.conf
+# default lua config
+install(FILES ${CMAKE_SOURCE_DIR}/example/hyprland.lua
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/hypr)
+
+# LuaLS stubs
+install(FILES ${CMAKE_SOURCE_DIR}/meta/hl.meta.lua
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/hypr/stubs)
 
 # portal config
 install(FILES ${CMAKE_SOURCE_DIR}/assets/hyprland-portals.conf
