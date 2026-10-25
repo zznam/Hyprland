@@ -6,8 +6,6 @@
 #include "wlr-output-power-management-unstable-v1.hpp"
 #include "../helpers/signal/Signal.hpp"
 
-class CMonitor;
-
 class COutputPower {
   public:
     COutputPower(SP<CZwlrOutputPowerV1> resource_, PHLMONITOR pMonitor);
@@ -15,9 +13,13 @@ class COutputPower {
     bool good();
 
   private:
+    void                   fail();
+    void                   sendMode();
+
     SP<CZwlrOutputPowerV1> m_resource;
 
     PHLMONITORREF          m_monitor;
+    bool                   m_failed = false;
 
     struct {
         CHyprSignalListener monitorDestroy;

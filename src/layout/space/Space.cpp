@@ -4,11 +4,11 @@
 #include "../algorithm/Algorithm.hpp"
 
 #include "../../debug/log/Logger.hpp"
-#include "../../desktop/Workspace.hpp"
+#include "../../workspace/HLWorkspace.hpp"
 #include "../../config/shared/workspace/WorkspaceRuleManager.hpp"
 #include "../../config/ConfigValue.hpp"
 #include "../../event/EventBus.hpp"
-#include "../../helpers/Monitor.hpp"
+#include "../../output/Monitor.hpp"
 
 using namespace Layout;
 
@@ -76,7 +76,7 @@ void CSpace::setAlgorithmProvider(SP<CAlgorithm> algo) {
 
 void CSpace::recheckWorkArea() {
     if (!m_parent || !m_parent->m_monitor) {
-        Log::logger->log(Log::ERR, "CSpace: recheckWorkArea on no parent / mon?!");
+        LOG(Log::ERR, "CSpace: recheckWorkArea on no parent / mon?!");
         return;
     }
 
@@ -84,15 +84,15 @@ void CSpace::recheckWorkArea() {
 
     auto        workArea = m_parent->m_monitor->logicalBoxMinusReserved();
 
-    static auto PGAPSOUTDATA   = CConfigValue<Hyprlang::CUSTOMTYPE>("general:gaps_out");
-    static auto PFLOATGAPSDATA = CConfigValue<Hyprlang::CUSTOMTYPE>("general:float_gaps");
-    auto* const PGAPSOUT       = sc<Config::CCssGapData*>((PGAPSOUTDATA.ptr())->getData());
-    auto*       PFLOATGAPS     = sc<Config::CCssGapData*>(PFLOATGAPSDATA.ptr()->getData());
+    static auto PGAPSOUTDATA   = CConfigValue<Config::IComplexConfigValue>("general:gaps_out");
+    static auto PFLOATGAPSDATA = CConfigValue<Config::IComplexConfigValue>("general:float_gaps");
+    auto* const PGAPSOUT       = sc<Config::CCssGapData*>(PGAPSOUTDATA.ptr());
+    auto*       PFLOATGAPS     = sc<Config::CCssGapData*>(PFLOATGAPSDATA.ptr());
     if (PFLOATGAPS->m_bottom < 0 || PFLOATGAPS->m_left < 0 || PFLOATGAPS->m_right < 0 || PFLOATGAPS->m_top < 0)
         PFLOATGAPS = PGAPSOUT;
 
     auto                   gapsOut   = WORKSPACERULE.m_gapsOut.value_or(*PGAPSOUT);
-    auto                   gapsFloat = WORKSPACERULE.m_gapsOut.value_or(*PFLOATGAPS);
+    auto                   gapsFloat = WORKSPACERULE.m_floatGaps.value_or(*PFLOATGAPS);
 
     Desktop::CReservedArea reservedGaps{gapsOut.m_top, gapsOut.m_right, gapsOut.m_bottom, gapsOut.m_left};
     Desktop::CReservedArea reservedFloatGaps{gapsFloat.m_top, gapsFloat.m_right, gapsFloat.m_bottom, gapsFloat.m_left};
@@ -146,23 +146,14 @@ SP<CAlgorithm> CSpace::algorithm() const {
     return m_algorithm;
 }
 
-void CSpace::recalculate() {
+void CSpace::recalculate(eRecalculateReason reason) {
     recheckWorkArea();
 
     if (m_algorithm)
-        m_algorithm->recalculate();
+        m_algorithm->recalculate(reason);
 }
 
-void CSpace::setFullscreen(SP<ITarget> t, eFullscreenMode mode) {
-    t->setFullscreenMode(mode);
-
-    if (mode == FSMODE_NONE && m_algorithm && t->floating())
-        m_algorithm->recenter(t);
-
-    recalculate();
-}
-
-std::expected<void, std::string> CSpace::layoutMsg(const std::string_view& sv) {
+Config::ErrorResult CSpace::layoutMsg(const std::string_view& sv) {
     if (m_algorithm)
         return m_algorithm->layoutMsg(sv);
 
@@ -202,6 +193,22 @@ SP<ITarget> CSpace::getNextCandidate(SP<ITarget> old) {
     return !m_algorithm ? nullptr : m_algorithm->getNextCandidate(old);
 }
 
+bool Layout::isHardRecalculateReason(eRecalculateReason reason) {
+    return reason != RECALCULATE_REASON_WORKSPACE_CHANGE && reason != RECALCULATE_REASON_SPECIAL_WORKSPACE_TOGGLE &&
+        reason != RECALCULATE_REASON_TOGGLE_LAYOUT_HANDLED_FULLSCREEN && reason != RECALCULATE_REASON_TOGGLE_DEFAULT_HANDLED_FULLSCREEN &&
+        reason != RECALCULATE_REASON_INVALIDATE_MONITOR_GEOMETRIES && reason != RECALCULATE_REASON_RENDER_MONITOR;
+}
+
 const std::vector<WP<ITarget>>& CSpace::targets() const {
     return m_targets;
+}
+
+eRecalculateReason Layout::recalcMonitorReasonToRecalcReason(CLayoutManager::eRecalculateMonitorReason reason) {
+    // If eRecalculateMonitorReason doesn't have a eRecalculateReason pair, it'll return nullopt
+    switch (reason) {
+        case CLayoutManager::RECALCULATE_MONITOR_REASON_TOGGLE_SPECIAL_WORKSPACE: return RECALCULATE_REASON_SPECIAL_WORKSPACE_TOGGLE;
+        case CLayoutManager::RECALCULATE_MONITOR_REASON_WORKSPACE_CHANGE: return RECALCULATE_REASON_WORKSPACE_CHANGE;
+        case CLayoutManager::RECALCULATE_MONITOR_REASON_TOGGLE_FULLSCREEN: return RECALCULATE_REASON_TOGGLE_DEFAULT_HANDLED_FULLSCREEN;
+        default: return RECALCULATE_REASON_UNKNOWN;
+    }
 }

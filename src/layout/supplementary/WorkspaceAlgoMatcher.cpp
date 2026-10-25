@@ -4,6 +4,7 @@
 #include "../../config/shared/workspace/WorkspaceRuleManager.hpp"
 
 #include "../algorithm/Algorithm.hpp"
+#include "../algorithm/TiledAlgorithm.hpp"
 #include "../space/Space.hpp"
 
 #include "../algorithm/floating/default/DefaultFloatingAlgorithm.hpp"
@@ -12,7 +13,7 @@
 #include "../algorithm/tiled/scrolling/ScrollingAlgorithm.hpp"
 #include "../algorithm/tiled/monocle/MonocleAlgorithm.hpp"
 
-#include "../../Compositor.hpp"
+#include "../../state/WorkspaceState.hpp"
 
 using namespace Layout;
 using namespace Layout::Supplementary;
@@ -101,35 +102,56 @@ UP<IFloatingAlgorithm> CWorkspaceAlgoMatcher::algoForNameFloat(const std::string
 }
 
 std::string CWorkspaceAlgoMatcher::tiledAlgoForWorkspace(const PHLWORKSPACE& w) {
-    static auto PLAYOUT = CConfigValue<Hyprlang::STRING>("general:layout");
+    static auto PLAYOUT = CConfigValue<Config::STRING>("general:layout");
 
     auto        rule = Config::workspaceRuleMgr()->getWorkspaceRuleFor(w);
     return rule && rule->m_layout.has_value() ? rule->m_layout.value() : *PLAYOUT;
 }
 
 SP<CAlgorithm> CWorkspaceAlgoMatcher::createAlgorithmForWorkspace(PHLWORKSPACE w) {
-    return CAlgorithm::create(algoForNameTiled(tiledAlgoForWorkspace(w)), makeUnique<Floating::CDefaultFloatingAlgorithm>(), w->m_space);
+    return CAlgorithm::create(algoForNameTiled(tiledAlgoForWorkspace(w)), makeUnique<Floating::CDefaultFloatingAlgorithm>(), w->space());
 }
 
 void CWorkspaceAlgoMatcher::updateWorkspaceLayouts() {
+    const auto WORKSPACES = State::Workspace::state()->workspacesCopy();
+
     // TODO: make this ID-based, string comparison is slow
-    for (const auto& ws : g_pCompositor->getWorkspaces()) {
-        if (!ws)
+    for (const auto& WORKSPACE : WORKSPACES) {
+        // Workspaces can briefly outlive usable layout state while monitor
+        // changes move or destroy them.
+        if (!WORKSPACE || !WORKSPACE->m_monitor || !WORKSPACE->space())
             continue;
 
-        const auto& TILED_ALGO = ws->m_space->algorithm()->tiledAlgo();
+        const auto& SPACE     = WORKSPACE->space();
+        const auto  ALGORITHM = SPACE->algorithm();
+        if (!ALGORITHM)
+            continue;
+
+        const auto& TILED_ALGO = ALGORITHM->tiledAlgo();
 
         if (!TILED_ALGO)
             continue;
 
-        const auto LAYOUT_TO_USE = tiledAlgoForWorkspace(ws.lock());
+        const auto LAYOUT_TO_USE = tiledAlgoForWorkspace(WORKSPACE);
 
-        if (m_algoNames.contains(&typeid(*TILED_ALGO.get())) && m_algoNames.at(&typeid(*TILED_ALGO.get())) == LAYOUT_TO_USE)
+        const auto CURRENT_LAYOUT = getNameForTiledAlgo(TILED_ALGO.get());
+
+        if (CURRENT_LAYOUT == LAYOUT_TO_USE && m_tiledAlgos.contains(LAYOUT_TO_USE))
             continue;
 
         // needs a switchup
-        ws->m_space->algorithm()->updateTiledAlgo(algoForNameTiled(LAYOUT_TO_USE));
+        ALGORITHM->updateTiledAlgo(algoForNameTiled(LAYOUT_TO_USE));
     }
+}
+
+std::string CWorkspaceAlgoMatcher::getNameForTiledAlgo(const ITiledAlgorithm* algo) {
+    if (!algo)
+        return "unknown";
+
+    if (const auto name = algo->layoutName(); name.has_value())
+        return *name;
+
+    return getNameForTiledAlgo(&typeid(*algo));
 }
 
 std::string CWorkspaceAlgoMatcher::getNameForTiledAlgo(const std::type_info* type) {

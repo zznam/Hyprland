@@ -6,9 +6,10 @@
 #include "../render/Renderer.hpp"
 #include "../desktop/state/FocusState.hpp"
 #include "../desktop/view/SessionLock.hpp"
-#include "./managers/SeatManager.hpp"
-#include "./managers/input/InputManager.hpp"
-#include "./managers/eventLoop/EventLoopManager.hpp"
+#include "../managers/SeatManager.hpp"
+#include "../managers/input/InputManager.hpp"
+#include "../managers/eventLoop/EventLoopManager.hpp"
+#include "../state/MonitorState.hpp"
 #include <algorithm>
 #include <ranges>
 
@@ -20,7 +21,7 @@ SSessionLockSurface::SSessionLockSurface(SP<CSessionLockSurface> surface_) : sur
 
         g_pInputManager->simulateMouseMovement();
 
-        const auto PMONITOR = g_pCompositor->getMonitorFromID(iMonitorID);
+        const auto PMONITOR = State::monitorState()->query().id(iMonitorID).run();
 
         if (PMONITOR)
             g_pHyprRenderer->damageMonitor(PMONITOR);
@@ -34,7 +35,7 @@ SSessionLockSurface::SSessionLockSurface(SP<CSessionLockSurface> surface_) : sur
     });
 
     listeners.commit = surface_->m_events.commit.listen([this] {
-        const auto PMONITOR = g_pCompositor->getMonitorFromID(iMonitorID);
+        const auto PMONITOR = State::monitorState()->query().id(iMonitorID).run();
 
         if (mapped && !Desktop::focusState()->surface())
             g_pInputManager->simulateMouseMovement();
@@ -49,10 +50,10 @@ CSessionLockManager::CSessionLockManager() {
 }
 
 void CSessionLockManager::onNewSessionLock(SP<CSessionLock> pLock) {
-    static auto PALLOWRELOCK = CConfigValue<Hyprlang::INT>("misc:allow_session_lock_restore");
+    static auto PALLOWRELOCK = CConfigValue<Config::INTEGER>("misc:allow_session_lock_restore");
 
-    if (PROTO::sessionLock->isLocked() && !*PALLOWRELOCK) {
-        LOGM(Log::DEBUG, "Cannot re-lock, misc:allow_session_lock_restore is disabled");
+    if (PROTO::sessionLock->isLocked() && !*PALLOWRELOCK && g_pCompositor->m_startLockedCommand.empty()) {
+        LOG(Log::DEBUG, "Cannot re-lock, misc:allow_session_lock_restore is disabled");
         pLock->sendDenied();
         return;
     }
@@ -60,7 +61,7 @@ void CSessionLockManager::onNewSessionLock(SP<CSessionLock> pLock) {
     if (m_sessionLock && !clientDenied() && !clientLocked())
         return; // Not allowing to relock in case the old lock is still in a limbo
 
-    LOGM(Log::DEBUG, "Session got locked by {:x}", (uintptr_t)pLock.get());
+    LOG(Log::DEBUG, "Session got locked by {:x}", (uintptr_t)pLock.get());
 
     m_sessionLock       = makeUnique<SSessionLock>();
     m_sessionLock->lock = pLock;
@@ -73,14 +74,16 @@ void CSessionLockManager::onNewSessionLock(SP<CSessionLock> pLock) {
         NEWSURFACE->iMonitorID = PMONITOR->m_id;
         PROTO::fractional->sendScale(surface->surface(), PMONITOR->m_scale);
 
-        g_pCompositor->m_otherViews.emplace_back(Desktop::View::CSessionLock::create(surface));
+        NEWSURFACE->view = Desktop::View::CSessionLock::create(surface);
     });
 
     m_sessionLock->listeners.unlock = pLock->m_events.unlockAndDestroy.listen([this] {
+        m_events.unlock.emit();
+
         m_sessionLock.reset();
         g_pInputManager->refocus();
 
-        for (auto const& m : g_pCompositor->m_monitors)
+        for (auto const& m : State::monitorState()->monitors())
             g_pHyprRenderer->damageMonitor(m);
     });
 
@@ -88,16 +91,18 @@ void CSessionLockManager::onNewSessionLock(SP<CSessionLock> pLock) {
         m_sessionLock.reset();
         Desktop::focusState()->rawSurfaceFocus(nullptr);
 
-        for (auto const& m : g_pCompositor->m_monitors)
+        for (auto const& m : State::monitorState()->monitors())
             g_pHyprRenderer->damageMonitor(m);
     });
+
+    m_events.lock.emit();
 
     Desktop::focusState()->rawSurfaceFocus(nullptr);
     g_pSeatManager->setGrab(nullptr);
 
-    const bool NOACTIVEMONS = std::ranges::all_of(g_pCompositor->m_monitors, [](const auto& m) { return !m->m_enabled || !m->m_dpmsStatus; });
+    const bool NOACTIVEMONS = std::ranges::all_of(State::monitorState()->monitors(), [](const auto& m) { return !m->m_enabled || !m->m_dpmsStatus; });
 
-    if (NOACTIVEMONS || g_pCompositor->m_unsafeState) {
+    if (NOACTIVEMONS) {
         // Normally the locked event is sent after each output rendered a lock screen frame.
         // When there are no active outputs, send it right away.
         m_sessionLock->lock->sendLocked();
@@ -105,8 +110,10 @@ void CSessionLockManager::onNewSessionLock(SP<CSessionLock> pLock) {
         return;
     }
 
-    m_sessionLock->sendDeniedTimer = makeShared<CEventLoopTimer>(
-        // Within this arbitrary amount of time, a session-lock client is expected to create and commit a lock surface for each output. If the client fails to do that, it will be denied.
+    m_sessionLock->sendLockedTimer = makeShared<CEventLoopTimer>(
+        // Clients get sent the "locked" event after they submitted a lock frame for each output.
+        // If they fail to do this, we send the "locked" event after a fixed amount of time here.
+        // Previously we sent denied after this timeout, but that forcefully makes the client exit and the protocol doesn't require that anyways.
         std::chrono::seconds(5),
         [](auto, auto) {
             if (!g_pSessionLockManager || g_pSessionLockManager->clientLocked() || g_pSessionLockManager->clientDenied())
@@ -115,29 +122,22 @@ void CSessionLockManager::onNewSessionLock(SP<CSessionLock> pLock) {
             if (!g_pSessionLockManager->m_sessionLock || !g_pSessionLockManager->m_sessionLock->lock)
                 return;
 
-            if (g_pCompositor->m_unsafeState || !g_pCompositor->m_aqBackend->hasSession() || !g_pCompositor->m_aqBackend->session->active) {
-                // Because the session is inactive, there is a good reason for why the client did't manage to render to all outputs.
-                // We send locked, although this could lead to imperfect frames when we start to render again.
-                g_pSessionLockManager->m_sessionLock->lock->sendLocked();
-                g_pSessionLockManager->m_sessionLock->hasSentLocked = true;
-                return;
-            }
-
-            LOGM(Log::WARN, "Kicking lockscreen client, because it failed to render to all outputs within 5 seconds");
-            g_pSessionLockManager->m_sessionLock->lock->sendDenied();
-            g_pSessionLockManager->m_sessionLock->hasSentDenied = true;
+            LOG(Log::WARN,
+                "Sending locked after a 5 second timeout. This happens when we failed to render a lock frame from the client for every output. Lockdead frames may be shown.");
+            g_pSessionLockManager->m_sessionLock->lock->sendLocked();
+            g_pSessionLockManager->m_sessionLock->hasSentLocked = true;
         },
         nullptr);
 
-    g_pEventLoopManager->addTimer(m_sessionLock->sendDeniedTimer);
+    g_pEventLoopManager->addTimer(m_sessionLock->sendLockedTimer);
 }
 
-void CSessionLockManager::removeSendDeniedTimer() {
-    if (!m_sessionLock || !m_sessionLock->sendDeniedTimer)
+void CSessionLockManager::removeSendLockedTimer() {
+    if (!m_sessionLock || !m_sessionLock->sendLockedTimer)
         return;
 
-    g_pEventLoopManager->removeTimer(m_sessionLock->sendDeniedTimer);
-    m_sessionLock->sendDeniedTimer.reset();
+    g_pEventLoopManager->removeTimer(m_sessionLock->sendLockedTimer);
+    m_sessionLock->sendLockedTimer.reset();
 }
 
 bool CSessionLockManager::isSessionLocked() {
@@ -166,10 +166,10 @@ void CSessionLockManager::onLockscreenRenderedOnMonitor(uint64_t id) {
 
     m_sessionLock->lockedMonitors.emplace(id);
     const bool LOCKED =
-        std::ranges::all_of(g_pCompositor->m_monitors, [this](auto m) { return !m->m_enabled || !m->m_dpmsStatus || m_sessionLock->lockedMonitors.contains(m->m_id); });
+        std::ranges::all_of(State::monitorState()->monitors(), [this](auto m) { return !m->m_enabled || !m->m_dpmsStatus || m_sessionLock->lockedMonitors.contains(m->m_id); });
 
     if (LOCKED && m_sessionLock->lock->good()) {
-        removeSendDeniedTimer();
+        removeSendLockedTimer();
         m_sessionLock->lock->sendLocked();
         m_sessionLock->hasSentLocked = true;
     }
@@ -220,11 +220,32 @@ bool CSessionLockManager::clientDenied() {
     return m_sessionLock && m_sessionLock->hasSentDenied;
 }
 
+void CSessionLockManager::clearSessionLock() {
+    m_events.unlock.emit();
+    m_sessionLock = {};
+}
+
+void CSessionLockManager::forceUnlock() {
+    PROTO::sessionLock->forceUnlock();
+    clearSessionLock();
+
+    Desktop::focusState()->rawSurfaceFocus(nullptr);
+    for (auto const& m : State::monitorState()->monitors())
+        g_pHyprRenderer->damageMonitor(m);
+
+    g_pInputManager->refocus();
+}
+
+void CSessionLockManager::forceLock() {
+    PROTO::sessionLock->forceLock();
+    m_events.lock.emit();
+}
+
 bool CSessionLockManager::shallConsiderLockMissing() {
     if (!m_sessionLock)
         return true;
 
-    static auto LOCKDEAD_SCREEN_DELAY = CConfigValue<Hyprlang::INT>("misc:lockdead_screen_delay");
+    static auto LOCKDEAD_SCREEN_DELAY = CConfigValue<Config::INTEGER>("misc:lockdead_screen_delay");
 
     return m_sessionLock->lockTimer.getMillis() > *LOCKDEAD_SCREEN_DELAY;
 }

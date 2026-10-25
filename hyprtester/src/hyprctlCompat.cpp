@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <csignal>
 #include <cerrno>
+#include <format>
 #include <print>
 #include <hyprutils/memory/Casts.hpp>
 using namespace Hyprutils::Memory;
@@ -26,12 +27,10 @@ static int getUID() {
 static std::string getRuntimeDir() {
     const auto XDG = getenv("XDG_RUNTIME_DIR");
 
-    if (!XDG) {
-        const std::string USERID = std::to_string(getUID());
-        return "/run/user/" + USERID + "/hypr";
-    }
+    if (!XDG)
+        return std::format("/run/user/{}/hypr", getUID());
 
-    return std::string{XDG} + "/hypr";
+    return std::format("{}/hypr", XDG);
 }
 
 std::vector<SInstanceData> instances() {
@@ -43,7 +42,7 @@ std::vector<SInstanceData> instances() {
     } catch (std::exception& e) { return {}; }
 
     for (const auto& el : std::filesystem::directory_iterator(getRuntimeDir())) {
-        if (!el.is_directory() || !std::filesystem::exists(el.path().string() + "/hyprland.lock"))
+        if (!std::filesystem::exists(el.path() / "hyprland.lock"))
             continue;
 
         // read lock
@@ -55,7 +54,7 @@ std::vector<SInstanceData> instances() {
         } catch (std::exception& e) { continue; }
 
         // read file
-        std::ifstream ifs(el.path().string() + "/hyprland.lock");
+        std::ifstream ifs(std::format("{}/hyprland.lock", el.path().string()));
 
         int           i = 0;
         for (std::string line; std::getline(ifs, line); ++i) {
@@ -74,7 +73,7 @@ std::vector<SInstanceData> instances() {
 
     std::erase_if(result, [&](const auto& el) { return kill(el.pid, 0) != 0 && errno == ESRCH; });
 
-    std::sort(result.begin(), result.end(), [&](const auto& a, const auto& b) { return a.time < b.time; });
+    std::ranges::sort(result, [&](const auto& a, const auto& b) { return a.time < b.time; });
 
     return result;
 }
@@ -93,7 +92,7 @@ std::string getFromSocket(const std::string& cmd) {
     sockaddr_un serverAddress = {0};
     serverAddress.sun_family  = AF_UNIX;
 
-    std::string socketPath = getRuntimeDir() + "/" + HIS + "/.socket.sock";
+    std::string socketPath = std::format("{}/{}/.socket.sock", getRuntimeDir(), HIS);
 
     strncpy(serverAddress.sun_path, socketPath.c_str(), sizeof(serverAddress.sun_path) - 1);
 

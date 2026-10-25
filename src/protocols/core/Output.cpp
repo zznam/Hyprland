@@ -1,9 +1,9 @@
 #include "Output.hpp"
 #include "Compositor.hpp"
 #include "../../Compositor.hpp"
-#include "../../helpers/Monitor.hpp"
+#include "../../output/Monitor.hpp"
 
-CWLOutputResource::CWLOutputResource(SP<CWlOutput> resource_, PHLMONITOR pMonitor) : m_monitor(pMonitor), m_resource(resource_) {
+CWLOutputResource::CWLOutputResource(SP<CWlOutput> resource_, PHLMONITOR pMonitor, WP<CWLOutputProtocol> owner) : m_monitor(pMonitor), m_owner(owner), m_resource(resource_) {
     if UNLIKELY (!good())
         return;
 
@@ -11,17 +11,20 @@ CWLOutputResource::CWLOutputResource(SP<CWlOutput> resource_, PHLMONITOR pMonito
 
     m_client = m_resource->client();
 
-    if (!m_monitor)
-        return;
-
+    // route through the owning protocol object, not a name lookup: after a monitor
+    // unplug/replug PROTO::outputs.at(name) is a *new* global, and releases meant for the
+    // old defunct one would never drain it.
     m_resource->setOnDestroy([this](CWlOutput* r) {
-        if (m_monitor && PROTO::outputs.contains(m_monitor->m_name))
-            PROTO::outputs.at(m_monitor->m_name)->destroyResource(this);
+        if (m_owner)
+            m_owner->destroyResource(this);
     });
     m_resource->setRelease([this](CWlOutput* r) {
-        if (m_monitor && PROTO::outputs.contains(m_monitor->m_name))
-            PROTO::outputs.at(m_monitor->m_name)->destroyResource(this);
+        if (m_owner)
+            m_owner->destroyResource(this);
     });
+
+    if (!m_monitor || !m_monitor->m_output || !m_owner || m_owner->m_defunct)
+        return;
 
     if (m_resource->version() >= 4) {
         m_resource->sendName(m_monitor->m_name.c_str());
@@ -70,7 +73,7 @@ SP<CWlOutput> CWLOutputResource::getResource() {
 }
 
 void CWLOutputResource::updateState() {
-    if (!m_monitor || (m_owner && m_owner->m_defunct))
+    if (!m_monitor || !m_monitor->m_output || !m_owner || m_owner->m_defunct)
         return;
 
     if (m_resource->version() >= 2)
@@ -78,8 +81,8 @@ void CWLOutputResource::updateState() {
 
     m_resource->sendMode(WL_OUTPUT_MODE_CURRENT, m_monitor->m_pixelSize.x, m_monitor->m_pixelSize.y, m_monitor->m_refreshRate * 1000.0);
 
-    m_resource->sendGeometry(0, 0, m_monitor->m_output->physicalSize.x, m_monitor->m_output->physicalSize.y, m_monitor->m_output->subpixel, m_monitor->m_output->make.c_str(),
-                             m_monitor->m_output->model.c_str(), m_monitor->m_transform);
+    m_resource->sendGeometry(m_monitor->m_position.x, m_monitor->m_position.y, m_monitor->m_output->physicalSize.x, m_monitor->m_output->physicalSize.y,
+                             m_monitor->m_output->subpixel, m_monitor->m_output->make.c_str(), m_monitor->m_output->model.c_str(), m_monitor->m_transform);
 
     if (m_resource->version() >= 2)
         m_resource->sendDone();
@@ -96,10 +99,7 @@ CWLOutputProtocol::CWLOutputProtocol(const wl_interface* iface, const int& ver, 
 }
 
 void CWLOutputProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    if UNLIKELY (m_defunct)
-        Log::logger->log(Log::WARN, "[wl_output] Binding a wl_output that's inert?? Possible client bug.");
-
-    const auto RESOURCE = m_outputs.emplace_back(makeShared<CWLOutputResource>(makeShared<CWlOutput>(client, ver, id), m_monitor.lock()));
+    const auto RESOURCE = m_outputs.emplace_back(makeShared<CWLOutputResource>(makeShared<CWlOutput>(client, ver, id), m_monitor.lock(), m_self));
 
     if UNLIKELY (!RESOURCE->good()) {
         wl_client_post_no_memory(client);
@@ -107,16 +107,30 @@ void CWLOutputProtocol::bindManager(wl_client* client, void* data, uint32_t ver,
         return;
     }
 
-    RESOURCE->m_self  = RESOURCE;
-    RESOURCE->m_owner = m_self;
+    RESOURCE->m_self = RESOURCE;
+
+    if (m_defunct || !m_monitor || !m_monitor->m_output)
+        return;
+
     m_events.outputBound.emit(RESOURCE);
 }
 
 void CWLOutputProtocol::destroyResource(CWLOutputResource* resource) {
     std::erase_if(m_outputs, [&](const auto& other) { return other.get() == resource; });
 
-    if (m_outputs.empty() && m_defunct)
-        PROTO::outputs.erase(m_name);
+    if (m_outputs.empty() && m_defunct) {
+        // only erase the map entry if it is actually us: a new global with the same name may
+        // have replaced us (monitor replug), in which case we live in defunctOutputs.
+        // NOTE: either erase drops the last ref to `this` — nothing may run after it.
+        if (PROTO::outputs.contains(m_name) && PROTO::outputs.at(m_name).get() == this)
+            PROTO::outputs.erase(m_name);
+        else
+            std::erase_if(PROTO::defunctOutputs, [this](const auto& other) { return other.get() == this; });
+    }
+}
+
+bool CWLOutputProtocol::hasBoundResources() {
+    return !m_outputs.empty();
 }
 
 std::vector<SP<CWLOutputResource>> CWLOutputProtocol::outputResourcesFrom(wl_client* client) {

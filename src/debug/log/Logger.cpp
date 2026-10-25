@@ -7,25 +7,31 @@
 
 using namespace Log;
 
-CLogger::CLogger() {
-    const auto IS_TRACE = Env::isTrace();
-    m_logger.setLogLevel(IS_TRACE ? Hyprutils::CLI::LOG_TRACE : Hyprutils::CLI::LOG_DEBUG);
+CLogger::CLogger() : m_isTrace(Env::isTrace()) {
+    m_logger.setLogLevel(m_isTrace ? Hyprutils::CLI::LOG_TRACE : Hyprutils::CLI::LOG_DEBUG);
 }
 
 void CLogger::log(Hyprutils::CLI::eLogLevel level, const std::string_view& str) {
-
-    static bool TRACE = Env::isTrace();
-
     if (!m_logsEnabled)
         return;
 
-    if (level == Hyprutils::CLI::LOG_TRACE && !TRACE)
+    if (level == Hyprutils::CLI::LOG_TRACE && !m_isTrace)
         return;
 
     if (SRollingLogFollow::get().isRunning())
         SRollingLogFollow::get().addLog(str);
 
     m_logger.log(level, str);
+}
+
+void CLogger::log(Hyprutils::CLI::eLogLevel level, const std::string_view loc, const std::string_view str) {
+    if (!m_logsEnabled)
+        return;
+
+    if (level == Hyprutils::CLI::LOG_TRACE && !m_isTrace)
+        return;
+
+    log(level, std::format("[{}] {}", loc, str));
 }
 
 void CLogger::initIS(const std::string_view& IS) {
@@ -43,10 +49,10 @@ void CLogger::initCallbacks() {
 }
 
 void CLogger::recheckCfg() {
-    static auto PDISABLELOGS  = CConfigValue<Hyprlang::INT>("debug:disable_logs");
-    static auto PDISABLETIME  = CConfigValue<Hyprlang::INT>("debug:disable_time");
-    static auto PENABLESTDOUT = CConfigValue<Hyprlang::INT>("debug:enable_stdout_logs");
-    static auto PENABLECOLOR  = CConfigValue<Hyprlang::INT>("debug:colored_stdout_logs");
+    static auto PDISABLELOGS  = CConfigValue<Config::INTEGER>("debug:disable_logs");
+    static auto PDISABLETIME  = CConfigValue<Config::INTEGER>("debug:disable_time");
+    static auto PENABLESTDOUT = CConfigValue<Config::INTEGER>("debug:enable_stdout_logs");
+    static auto PENABLECOLOR  = CConfigValue<Config::INTEGER>("debug:colored_stdout_logs");
 
     m_logger.setEnableStdout(!*PDISABLELOGS && *PENABLESTDOUT);
     m_logsEnabled = !*PDISABLELOGS;

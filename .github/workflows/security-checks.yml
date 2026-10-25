@@ -6,14 +6,14 @@ jobs:
   flawfinder:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
     name: Flawfinder Checks
-    runs-on: ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LOCAL_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
       security-events: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Scan with Flawfinder
         uses: david-a-wheeler/flawfinder@8e4a779ad59dbfaee5da586aa9210853b701959c
@@ -22,6 +22,6 @@ jobs:
           output: 'flawfinder_results.sarif'
 
       - name: Upload analysis results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{github.workspace}}/flawfinder_results.sarif

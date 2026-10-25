@@ -14,248 +14,280 @@
 // - kitty
 // - xeyes
 
+#define INCLUDED_FROM_MAIN 1 // Prevent macro redefinition warnings from includes of "tests/*/tests.hpp"
+
 #include "shared.hpp"
 #include "hyprctlCompat.hpp"
 #include "tests/main/tests.hpp"
 #include "tests/clients/tests.hpp"
-#include "tests/plugin/plugin.hpp"
+#include "tests/misc/tests.hpp"
+#include "tests/shared.hpp"
 
-#include <filesystem>
 #include <hyprutils/os/Process.hpp>
 #include <hyprutils/memory/WeakPtr.hpp>
 #include <hyprutils/memory/Casts.hpp>
-using namespace Hyprutils::Memory;
 
-#include <csignal>
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
-#include <thread>
+#include <csignal>
+#include <filesystem>
+#include <memory>
 #include <print>
+#include <string>
 #include <string_view>
 #include <span>
+#include <thread>
+#include <vector>
 
 #include "Log.hpp"
 
 using namespace Hyprutils::OS;
 using namespace Hyprutils::Memory;
+using Path = std::filesystem::path;
 
 #define SP CSharedPointer
 
-static int               ret = 0;
-static SP<CProcess>      hyprlandProc;
-static const std::string cwd = std::filesystem::current_path().string();
+namespace {
+    struct SSettings {
+        Path                     configPath;
+        Path                     binaryPath;
+        Path                     pluginPath;
+        std::vector<std::string> requestedTests;
+    };
 
-//
-static bool launchHyprland(std::string configPath, std::string binaryPath) {
-    if (binaryPath == "") {
-        std::error_code ec;
-        if (!std::filesystem::exists(cwd + "/../build/Hyprland", ec) || ec) {
-            NLog::log("{}No Hyprland binary", Colors::RED);
-            return false;
-        }
+    struct STestsRunResult {
+        unsigned long long       total;
+        std::vector<std::string> failedNames;
+    };
+}
 
-        binaryPath = cwd + "/../build/Hyprland";
-    }
+static SP<CProcess> hyprlandProc;
 
-    if (configPath == "") {
-        std::error_code ec;
-        if (!std::filesystem::exists(cwd + "/test.conf", ec) || ec) {
-            NLog::log("{}No test config", Colors::RED);
-            return false;
-        }
-
-        configPath = cwd + "/test.conf";
-    }
-
-    NLog::log("{}Launching Hyprland", Colors::YELLOW);
+static bool         launchHyprland(Path configPath, Path binaryPath) {
+    NLog::yellow("Launching Hyprland");
     hyprlandProc = makeShared<CProcess>(binaryPath, std::vector<std::string>{"--config", configPath});
     hyprlandProc->addEnv("HYPRLAND_HEADLESS_ONLY", "1");
 
-    NLog::log("{}Launched async process", Colors::YELLOW);
+    NLog::yellow("Launched async process");
 
     return hyprlandProc->runAsync();
 }
 
 static bool hyprlandAlive() {
-    NLog::log("{}hyprlandAlive", Colors::YELLOW);
-    kill(hyprlandProc->pid(), 0);
-    return errno != ESRCH;
+    NLog::yellow("hyprlandAlive");
+    return kill(hyprlandProc->pid(), 0) == 0 || errno != ESRCH;
 }
 
-static void help() {
-    NLog::log("usage: hyprtester [arg [...]].\n");
+[[noreturn]] static void helpAndDie(int exit_code) {
+    NLog::log("usage: hyprtester [--OPTION [VALUE]]... [TEST_NAMES].\n");
     NLog::log(R"(Arguments:
-    --help              -h       - Show this message again
-    --config FILE       -c FILE  - Specify config file to use
-    --binary FILE       -b FILE  - Specify Hyprland binary to use
-    --plugin FILE       -p FILE  - Specify the location of the test plugin)");
+    --help              -h         - Show this message again
+    --config FILE       -c FILE    - Specify config file to use (default: './test.lua')
+    --binary FILE       -b FILE    - Specify Hyprland binary to use (default: '../build/Hyprland')
+    --plugin FILE       -p FILE    - Specify the location of the test plugin (default: './')
+    [TEST_NAMES]                   - Specify list of tests to run (separated by spaces).
+                                     If omitted, all tests will run.)");
+
+    std::exit(exit_code);
+}
+
+static Path validatePathOrDie(Path path) {
+    try {
+        if (!std::filesystem::is_regular_file(path)) {
+            throw std::exception();
+        }
+    } catch (...) {
+        std::println(stderr, "[ ERROR ] File '{}' is not accessible or not a regular file", path.string());
+        helpAndDie(EXIT_FAILURE);
+    }
+    return path;
+}
+
+static SSettings parseSettings(const std::span<const char*> args) {
+    static const auto cwd = std::filesystem::current_path();
+    SSettings         settings{};
+
+    for (auto it = args.begin(); it < args.end(); it++) {
+        std::string_view value = *it;
+        if (value == "--config" || value == "-c") {
+            if (std::next(it) == args.end()) {
+                helpAndDie(EXIT_FAILURE);
+            }
+
+            settings.configPath = validatePathOrDie(*std::next(it));
+            it++;
+        } else if (value == "--binary" || value == "-b") {
+            if (std::next(it) == args.end()) {
+                helpAndDie(EXIT_FAILURE);
+            }
+
+            settings.binaryPath = validatePathOrDie(*std::next(it));
+            it++;
+        } else if (value == "--plugin" || value == "-p") {
+            if (std::next(it) == args.end()) {
+                helpAndDie(EXIT_FAILURE);
+            }
+
+            settings.pluginPath = validatePathOrDie(*std::next(it));
+            it++;
+        } else if (value == "--help" || value == "-h") {
+            helpAndDie(EXIT_SUCCESS);
+        } else if (!value.starts_with("-")) {
+            settings.requestedTests.emplace_back(value);
+        } else {
+            std::println(stderr, "[ ERROR ] Unknown option '{}' !", *it);
+            helpAndDie(EXIT_FAILURE);
+        }
+    }
+
+    // Default options
+    if (settings.configPath.empty())
+        settings.configPath = validatePathOrDie(cwd / "test.lua");
+    if (settings.binaryPath.empty())
+        settings.binaryPath = validatePathOrDie(cwd / "../build/Hyprland");
+    if (settings.pluginPath.empty())
+        settings.pluginPath = cwd;
+
+    return settings;
+}
+
+static bool preTestCleanup() {
+    bool failed = false;
+
+    if (!Tests::killAllWindows()) {
+        NLog::red("Internal failure: failed to kill all windows");
+        failed = true;
+    }
+    if (!Tests::killAllLayers()) {
+        NLog::red("Internal failure: failed to kill all layers");
+        failed = true;
+    }
+    if (getFromSocket("/reload") != "ok") {
+        NLog::red("Internal failure: failed to reload");
+        failed = true;
+    }
+    if (!getFromSocket("/activeworkspace").contains("workspace 1 (1)")) {
+        if (getFromSocket("/dispatch hl.dsp.focus({ workspace = '1' })") != "ok") {
+            NLog::red("Internal failure: failed to switch to workspace 1");
+            failed = true;
+        }
+    }
+    if (getFromSocket("/dispatch hl.dsp.cursor.move({ x = 960, y = 540 })") != "ok") {
+        NLog::red("Internal failure: failed to reset cursor position");
+        failed = true;
+    }
+
+    return !failed;
+}
+
+static STestsRunResult runTests(std::vector<std::shared_ptr<CTestCase>>& testCases) {
+    struct STestsRunResult res{.total = testCases.size(), .failedNames = {}};
+
+    for (auto& tc : testCases) {
+        // Clean up before every test
+        NLog::yellow("Cleaning up");
+
+        if (!preTestCleanup()) // damn it, something really went wrong
+            std::exit(1);
+
+        NLog::log("{}Running test {}", Colors::BLUE, tc->name());
+        tc->test();
+
+        if (tc->failed) {
+            NLog::red("Test failed!: {}", tc->name());
+            res.failedNames.emplace_back(std::format("{}:{}", tc->groupName(), tc->name()));
+        } else
+            NLog::green("Test passed: {}", tc->name());
+    }
+
+    return res;
+}
+
+static void cleanupAndReport(const STestsRunResult& tInfo) {
+    NLog::green("dispatching exit");
+    getFromSocket("/dispatch hl.dsp.exit()");
+
+    NLog::log("\nSummary:\n\tPASSED: {}{}{}/{}", Colors::GREEN, tInfo.total - tInfo.failedNames.size(), Colors::RESET, tInfo.total);
+    NLog::log("\tFAILED: {}{}{}/{}", Colors::RED, tInfo.failedNames.size(), Colors::RESET, tInfo.total);
+    if (!tInfo.failedNames.empty()) {
+        NLog::red("Failed tests:");
+        for (const auto& name : tInfo.failedNames) {
+            NLog::red("\t- {}", name);
+        }
+    }
+
+    kill(hyprlandProc->pid(), SIGKILL);
+    hyprlandProc.reset();
 }
 
 int main(int argc, char** argv, char** envp) {
 
-    std::string configPath = "";
-    std::string binaryPath = "";
-    std::string pluginPath = std::filesystem::current_path().string();
+    std::span<const char*>                  args{const_cast<const char**>(argv + 1), sc<std::size_t>(argc - 1)};
+    const SSettings                         settings = parseSettings(args);
 
-    if (argc > 1) {
-        std::span<char*> args{argv + 1, sc<std::size_t>(argc - 1)};
-
-        for (auto it = args.begin(); it != args.end(); it++) {
-            std::string_view value = *it;
-
-            if (value == "--config" || value == "-c") {
-                if (std::next(it) == args.end()) {
-                    help();
-
-                    return 1;
-                }
-
-                configPath = *std::next(it);
-
-                try {
-                    configPath = std::filesystem::canonical(configPath);
-
-                    if (!std::filesystem::is_regular_file(configPath)) {
-                        throw std::exception();
-                    }
-                } catch (...) {
-                    std::println(stderr, "[ ERROR ] Config file '{}' doesn't exist!", configPath);
-                    help();
-
-                    return 1;
-                }
-
-                it++;
-
-                continue;
-            } else if (value == "--binary" || value == "-b") {
-                if (std::next(it) == args.end()) {
-                    help();
-
-                    return 1;
-                }
-
-                binaryPath = *std::next(it);
-
-                try {
-                    binaryPath = std::filesystem::canonical(binaryPath);
-
-                    if (!std::filesystem::is_regular_file(binaryPath)) {
-                        throw std::exception();
-                    }
-                } catch (...) {
-                    std::println(stderr, "[ ERROR ] Binary '{}' doesn't exist!", binaryPath);
-                    help();
-
-                    return 1;
-                }
-
-                it++;
-
-                continue;
-            } else if (value == "--plugin" || value == "-p") {
-                if (std::next(it) == args.end()) {
-                    help();
-
-                    return 1;
-                }
-
-                pluginPath = *std::next(it);
-
-                try {
-                    pluginPath = std::filesystem::canonical(pluginPath);
-
-                    if (!std::filesystem::is_regular_file(pluginPath)) {
-                        throw std::exception();
-                    }
-                } catch (...) {
-                    std::println(stderr, "[ ERROR ] plugin '{}' doesn't exist!", pluginPath);
-                    help();
-
-                    return 1;
-                }
-
-                it++;
-
-                continue;
-            } else if (value == "--help" || value == "-h") {
-                help();
-
-                return 0;
-            } else {
-                std::println(stderr, "[ ERROR ] Unknown option '{}' !", *it);
-                help();
-
-                return 1;
-            }
+    std::vector<std::shared_ptr<CTestCase>> requestedTestCases;
+    for (auto& test : settings.requestedTests) {
+        if (testCases.contains(test)) {
+            requestedTestCases.push_back(testCases.at(test));
+        } else {
+            NLog::red("ERROR: Unknown test name '{}'", test);
+            return EXIT_FAILURE;
         }
     }
+    if (requestedTestCases.empty()) {
+        // When no tests are explicitly requested, run all tests.
+        // For convenience of log inspection, run tests group by group.
+        requestedTestCases = miscTestCases;
+        std::ranges::copy(clientTestCases, std::back_inserter(requestedTestCases));
+        std::ranges::copy(mainTestCases, std::back_inserter(requestedTestCases));
+    }
 
-    NLog::log("{}launching hl", Colors::YELLOW);
-    if (!launchHyprland(configPath, binaryPath)) {
-        NLog::log("{}well it failed", Colors::RED);
+    NLog::yellow("launching hl");
+    if (!launchHyprland(settings.configPath, settings.binaryPath)) {
+        NLog::red("well it failed");
         return 1;
     }
 
     // hyprland has launched, let's check if it's alive after 10s
     std::this_thread::sleep_for(std::chrono::milliseconds(10000));
-    NLog::log("{}slept for 10s", Colors::YELLOW);
+    NLog::yellow("slept for 10s");
     if (!hyprlandAlive()) {
-        NLog::log("{}Hyprland failed to launch", Colors::RED);
+        NLog::red("Hyprland failed to launch!");
         return 1;
     }
 
     // wonderful, we are in. Let's get the instance signature.
-    NLog::log("{}trying to get INSTANCES", Colors::YELLOW);
+    NLog::yellow("trying to get INSTANCES");
     const auto INSTANCES = instances();
     if (INSTANCES.empty()) {
-        NLog::log("{}Hyprland failed to launch (2)", Colors::RED);
+        NLog::red("Hyprland failed to launch (2)");
         return 1;
     }
 
     HIS       = INSTANCES.back().id;
     WLDISPLAY = INSTANCES.back().wlSocket;
 
-    NLog::log("{}trying to get create headless output", Colors::YELLOW);
-    getFromSocket("/output create headless");
-
-    NLog::log("{}trying to load plugin", Colors::YELLOW);
-    if (const auto R = getFromSocket(std::format("/plugin load {}", pluginPath)); R != "ok") {
-        NLog::log("{}Failed to load the test plugin: {}", Colors::RED, R);
-        getFromSocket("/dispatch exit 1");
+    NLog::yellow("trying to get create headless output");
+    const auto CREATE_HEADLESS_2 = getFromSocket("/output create headless HEADLESS-2");
+    if (CREATE_HEADLESS_2 != "ok" && CREATE_HEADLESS_2 != "Name already taken") {
+        NLog::red("Failed to create HEADLESS-2: {}", CREATE_HEADLESS_2);
+        getFromSocket("/dispatch hl.dsp.exit()");
         return 1;
     }
 
-    NLog::log("{}Loaded plugin", Colors::YELLOW);
-
-    NLog::log("{}Running main tests", Colors::YELLOW);
-
-    for (const auto& fn : testFns) {
-        EXPECT(fn(), true);
+    NLog::yellow("trying to load plugin");
+    if (const auto R = getFromSocket(std::format("/plugin load {}", settings.pluginPath.string())); R != "ok") {
+        NLog::red("Failed to load the test plugin: {}", R);
+        getFromSocket("/dispatch hl.dsp.exit()");
+        return 1;
     }
 
-    NLog::log("{}Running protocol client tests", Colors::YELLOW);
+    NLog::yellow("Loaded plugin");
 
-    for (const auto& fn : clientTestFns) {
-        EXPECT(fn(), true);
-    }
+    STestsRunResult result = runTests(requestedTestCases);
 
-    NLog::log("{}running plugin test", Colors::YELLOW);
-    EXPECT(testPlugin(), true);
+    cleanupAndReport(result);
 
-    NLog::log("{}running vkb test from plugin", Colors::YELLOW);
-    EXPECT(testVkb(), true);
-
-    // kill hyprland
-    NLog::log("{}dispatching exit", Colors::YELLOW);
-    getFromSocket("/dispatch exit");
-
-    NLog::log("\n{}Summary:\n\tPASSED: {}{}{}/{}\n\tFAILED: {}{}{}/{}\n{}", Colors::RESET, Colors::GREEN, TESTS_PASSED, Colors::RESET, TESTS_PASSED + TESTS_FAILED, Colors::RED,
-              TESTS_FAILED, Colors::RESET, TESTS_PASSED + TESTS_FAILED, (TESTS_FAILED > 0 ? std::string{Colors::RED} + "\nSome tests failed.\n" : ""));
-
-    kill(hyprlandProc->pid(), SIGKILL);
-
-    hyprlandProc.reset();
-
-    return ret || TESTS_FAILED;
+    return result.failedNames.size() > 0;
 }

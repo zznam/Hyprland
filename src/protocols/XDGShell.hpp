@@ -16,8 +16,10 @@ class CXDGSurfaceResource;
 class CXDGToplevelResource;
 class CXDGPopupResource;
 class CSeatGrab;
+class CWLSeatResource;
 class CWLSurfaceResource;
 class CXDGDialogV1Resource;
+struct SEventLoopDoLaterLock;
 
 struct SXDGPositionerState {
     Vector2D requestedSize;
@@ -41,6 +43,17 @@ class CXDGPositionerRules {
 
   private:
     SXDGPositionerState m_state;
+};
+
+struct SXDGToplevelMoveRequest {
+    SP<CWLSeatResource> seat;
+    uint32_t            serial = 0;
+};
+
+struct SXDGToplevelResizeRequest {
+    SP<CWLSeatResource>   seat;
+    uint32_t              serial = 0;
+    xdgToplevelResizeEdge edges  = XDG_TOPLEVEL_RESIZE_EDGE_NONE;
 };
 
 class CXDGPopupResource {
@@ -105,16 +118,19 @@ class CXDGToplevelResource {
     uint32_t setMaximized(bool maximized);
     uint32_t setFullscreen(bool fullscreen);
     uint32_t setActive(bool active);
+    uint32_t setResizing(bool resizing);
     uint32_t setSuspeneded(bool sus);
     void     setNewParent(SP<CXDGToplevelResource> newParent);
 
     void     close();
 
     struct {
-        CSignalT<> sizeLimitsChanged;
-        CSignalT<> stateChanged;    // maximized, fs, minimized, etc.
-        CSignalT<> metadataChanged; // title, appid
-        CSignalT<> destroy;         // only the role
+        CSignalT<>                          sizeLimitsChanged;
+        CSignalT<>                          stateChanged;    // maximized, fs, minimized, etc.
+        CSignalT<>                          metadataChanged; // title, appid
+        CSignalT<SXDGToplevelMoveRequest>   requestMove;
+        CSignalT<SXDGToplevelResizeRequest> requestResize;
+        CSignalT<>                          destroy; // only the role
     } m_events;
 
     struct {
@@ -149,8 +165,12 @@ class CXDGToplevelResource {
     std::vector<WP<CXDGToplevelResource>> m_children;
 
   private:
-    SP<CXdgToplevel> m_resource;
-    void             applyState();
+    SP<CXdgToplevel>          m_resource;
+
+    UP<SEventLoopDoLaterLock> m_stateUpdate;
+
+    void                      scheduleStateApplication();
+    bool                      shouldIgnoreInitialMaximizeds() const;
 };
 
 class CXDGSurfaceRole : public ISurfaceRole {
@@ -202,12 +222,12 @@ class CXDGSurfaceResource {
     void configure();
 
   private:
-    SP<CXdgSurface>  m_resource;
+    SP<CXdgSurface>           m_resource;
 
-    uint32_t         m_lastConfigureSerial = 0;
-    uint32_t         m_scheduledSerial     = 0;
+    UP<SEventLoopDoLaterLock> m_stateUpdate;
 
-    wl_event_source* m_configureSource = nullptr;
+    uint32_t                  m_lastConfigureSerial = 0;
+    uint32_t                  m_scheduledSerial     = 0;
 
     //
     std::vector<WP<CXDGPopupResource>> m_popups;
