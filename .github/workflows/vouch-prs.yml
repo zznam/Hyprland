@@ -1,6 +1,12 @@
 name: Vouch MR Check
 
 on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to recheck
+        required: true
+        type: string
   pull_request_target:
     types: [opened, reopened]
 
@@ -13,12 +19,36 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Resolve pull request
+        id: subject
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const number = context.payload.pull_request?.number ?? context.payload.inputs?.pr;
+            if (!/^[1-9][0-9]*$/.test(String(number ?? ""))) {
+              throw new Error("Provide a valid pull request number.");
+            }
+            const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: Number(number) });
+            if (!/^[0-9a-f]{40}$/.test(pr.head.sha)) {
+              throw new Error("Pull request head SHA is unavailable.");
+            }
+            core.setOutput("number", String(pr.number));
+            core.setOutput("head", pr.head.sha);
+            core.setOutput("title", pr.title);
+            const isFork = `${context.repo.owner}/${context.repo.repo}`.toLowerCase() !== "hyprwm/hyprland";
+            const isOwner = pr.user.login.toLowerCase() === context.repo.owner.toLowerCase();
+            const isNativeManUpdate = pr.user.login === "github-actions[bot]" && pr.user.type === "Bot" &&
+              pr.head.repo?.full_name?.toLowerCase() === `${context.repo.owner}/${context.repo.repo}`.toLowerCase() &&
+              pr.head.ref === "automation/man-pages";
+            // The fork owner and this repository's generated-manual bot do not need a central organization list.
+            core.setOutput("trusted", String(isFork && (isOwner || isNativeManUpdate)));
       - name: Check out template
         uses: actions/checkout@v6
         with:
           persist-credentials: false
 
       - name: Verify central Vouch list
+        if: steps.subject.outputs.trusted != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -27,13 +57,14 @@ jobs:
             >/dev/null
 
       - name: Check whether the MR is exempt from Vouch
+        if: steps.subject.outputs.trusted != 'true'
         id: exempt
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          TITLE: ${{ github.event.pull_request.title }}
+          PR: ${{ steps.subject.outputs.number }}
+          TITLE: ${{ steps.subject.outputs.title }}
           EXEMPT_REGEX: '^src/i18n/'
         run: |
           # Title override
@@ -57,9 +88,10 @@ jobs:
           echo "only_exempt=$only_exempt" >> "$GITHUB_OUTPUT"
 
       - name: Enforce central Vouch list
+        if: steps.subject.outputs.trusted != 'true'
         uses: mitchellh/vouch/action/check-pr@v1
         with:
-          pr-number: ${{ github.event.pull_request.number }}
+          pr-number: ${{ steps.subject.outputs.number }}
           repo: ${{ github.repository }}
           vouched-repo: ${{ github.repository_owner }}/.github
           vouched-file: vouch/VOUCHED.td
