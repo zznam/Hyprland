@@ -1,10 +1,16 @@
 name: 'Code Owners'
 
 concurrency:
-  group: codeowners-${{ github.ref }}
+  group: codeowners-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: true
 
 on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to recheck
+        required: true
+        type: string
   pull_request_target:
     # Note: to support more features of codeowners-plus, more event triggers
     # may be required. See https://github.com/marketplace/actions/codeowners-plus
@@ -19,18 +25,36 @@ jobs:
     name: 'Run Codeowners Plus'
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve pull request
+        id: subject
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const number = context.payload.pull_request?.number ?? context.payload.inputs?.pr;
+            if (!/^[1-9][0-9]*$/.test(String(number ?? ""))) {
+              throw new Error("Provide a valid pull request number.");
+            }
+            const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: Number(number) });
+            if (!/^[0-9a-f]{40}$/.test(pr.head.sha)) {
+              throw new Error("Pull request head SHA is unavailable.");
+            }
+            core.setOutput("number", String(pr.number));
+            core.setOutput("head", pr.head.sha);
       - name: 'Checkout Code Repository'
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: 'Fetch PR Branch'
-        run: git fetch origin ${{ github.event.pull_request.head.sha }}
+        env:
+          PR_HEAD: ${{ steps.subject.outputs.head }}
+        run: git fetch --no-tags origin "$PR_HEAD"
 
       - name: 'Codeowners Plus'
         uses: multimediallc/codeowners-plus@v1.10.0
         with:
           github-token: '${{ secrets.GITHUB_TOKEN }}'
-          pr: '${{ github.event.pull_request.number }}'
+          pr: '${{ steps.subject.outputs.number }}'
           verbose: true
-          quiet: ${{ github.event.pull_request.draft }}
+          # Upstream owners are not fork collaborators. Keep analysis without review notifications.
+          quiet: ${{ github.repository != 'hyprwm/Hyprland' || github.event.pull_request.draft }}

@@ -2,29 +2,72 @@ name: Build man pages
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - docs/**
+      - .github/workflows/man-update.yaml
   push:
     paths:
       - docs/**
+      - .github/workflows/man-update.yaml
     branches:
-      - 'main'
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: man-pages-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  main:
+  build:
     name: Build man pages
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-    - name: Install deps
-      run: sudo apt install pandoc
+      - name: Clone repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
+      - name: Build man pages
+        run: make man
 
-    - name: Clone repository
-      uses: actions/checkout@v6
-      with:
-        token: ${{ secrets.PAT }}
+  propose-update:
+    name: Propose generated man pages
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
+      - name: Build man pages
+        run: make man
+      - name: Propose generated pages through a pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          base: main
+          branch: automation/man-pages
+          add-paths: |
+            docs/Hyprland.1
+            docs/hyprctl.1
+          commit-message: 'docs: regenerate manual pages'
+          title: 'docs: regenerate manual pages'
+          body: |
+            Regenerated with `make man` after documentation or workflow changes.
 
-    - name: Build man pages
-      run: make man
-
-    - uses: stefanzweifel/git-auto-commit-action@v7
-      name: Commit
-      with:
-        commit_message: "[gha] build man pages"
+            Generated pages land through this PR to respect default branch protection.

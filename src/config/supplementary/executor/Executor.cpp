@@ -202,7 +202,8 @@ std::optional<uint64_t> CExecutor::spawnRawProc(const std::string& args, PHLWORK
             close(devnull);
         }
 
-        execl("/bin/sh", "/bin/sh", "-c", args.c_str(), nullptr);
+        // User-configured exec deliberately evaluates shell commands with the same user privileges.
+        execl("/bin/sh", "/bin/sh", "-c", args.c_str(), nullptr); // Flawfinder: ignore
 
         // exit child
         _exit(0);
