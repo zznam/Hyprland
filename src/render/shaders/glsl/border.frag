@@ -8,7 +8,7 @@ in vec2       v_texcoord;
 uniform mat3  targetPrimariesXYZ;
 
 uniform vec2  fullSizeUntransformed;
-uniform float radiusOuter;
+uniform vec4  radiusOuter;
 uniform float thick;
 
 // Gradients are in OkLabA!!!! {l, a, b, alpha}
@@ -19,9 +19,11 @@ uniform int   gradient2Length;
 uniform float angle;
 uniform float angle2;
 uniform float gradientLerp;
+uniform vec4  gradientUV;
+uniform vec4  gradient2UV;
 uniform float alpha;
 
-uniform float radius;
+uniform vec4  radius;
 uniform float roundingPower;
 uniform vec2  topLeft;
 uniform vec2  fullSize;
@@ -45,7 +47,7 @@ void main() {
     fragColor =
 #endif
         getBorder(v_texcoord, alpha, fullSizeUntransformed, radiusOuter, thick, radius, roundingPower, topLeft, fullSize, gradientLength, gradient, angle, gradient2Length,
-                  gradient2, angle2, gradientLerp
+                  gradient2, angle2, gradientLerp, gradientUV, gradient2UV
 #if USE_CM
                   ,
                   sourceTF, targetTF, convertMatrix, srcTFRange, dstTFRange
@@ -59,7 +61,7 @@ void main() {
 #endif
 #if USE_TONEMAP
                   ,
-                  maxLuminance, dstMaxLuminance, dstRefLuminance, srcRefLuminance, tonemapMode
+                  maxLuminance, dstMaxLuminance, dstRefLuminance, tonemapMode
 #endif
 #if USE_SDR_MOD
                   ,

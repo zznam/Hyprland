@@ -12,13 +12,11 @@
   epoll-shim,
   git,
   glaze-hyprland,
-  glslang,
   gtest,
   hyprcursor,
   hyprgraphics,
   hyprland-protocols,
   hyprland-guiutils,
-  hyprlang,
   hyprutils,
   hyprwayland-scanner,
   hyprwire,
@@ -44,7 +42,6 @@
   pciutils,
   python3,
   re2,
-  sdbus-cpp_2,
   systemd,
   tomlplusplus,
   udis86-hyprland,
@@ -129,7 +126,7 @@ customStdenv.mkDerivation (finalAttrs: {
             ../systemd
             ../VERSION
             (fs.fileFilter (file: file.hasExt "1") ../docs)
-            (fs.fileFilter (file: file.hasExt "conf" || file.hasExt "in" || file.hasExt "lua" ) ../example)
+            (fs.fileFilter (file: file.hasExt "conf" || file.hasExt "in" || file.hasExt "lua") ../example)
             (fs.fileFilter (file: file.hasExt "sh") ../scripts)
             (fs.fileFilter (file: file.name == "CMakeLists.txt") ../.)
             (optional withTests [
@@ -182,12 +179,10 @@ customStdenv.mkDerivation (finalAttrs: {
       cairo
       git
       glaze-hyprland
-      glslang
       gtest
       hyprcursor
       hyprgraphics
       hyprland-protocols
-      hyprlang
       hyprutils
       hyprwire
       lcms2
@@ -205,7 +200,6 @@ customStdenv.mkDerivation (finalAttrs: {
       pango
       pciutils
       re2
-      sdbus-cpp_2
       tomlplusplus
       udis86-hyprland
       wayland
@@ -275,6 +269,7 @@ customStdenv.mkDerivation (finalAttrs: {
       install hyprtester/xdg-activation -t $out/bin
       install hyprtester/xdg-initial-maximize -t $out/bin
       install hyprtester/popup-render -t $out/bin
+      install hyprtester/fractional-subsurface -t $out/bin
       install hyprtester/wlr-foreign-toplevel -t $out/bin
       install hyprtester/toplevel-capture -t $out/bin
       install hyprland_gtests -t $out/bin

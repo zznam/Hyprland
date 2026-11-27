@@ -1,7 +1,6 @@
 #include "MonitorZoomController.hpp"
 
 #include <algorithm>
-#include <hyprlang.hpp>
 #include "../config/ConfigValue.hpp"
 #include "../pointer/PointerManager.hpp"
 #include "../render/OpenGL.hpp"
@@ -40,14 +39,14 @@ Vector2D CMonitorZoomController::getAnchor(const PHLMONITORREF& monitor) {
 }
 
 void CMonitorZoomController::zoomWithDetachedCamera(Render::CRenderContext& ctx, CBox& result) {
-    static auto PZOOMRIGID = CConfigValue<Config::INTEGER>("cursor:zoom_rigid");
+    static auto PZOOMRIGID = CConfigValue<Config::BOOL>("cursor:zoom_rigid");
 
     const auto  m      = ctx.m_data.pMonitor;
     auto        monbox = CBox(0, 0, m->m_size.x, m->m_size.y);
     const auto  ZOOM   = ctx.m_data.mouseZoomFactor;
     const auto  MOUSE  = getAnchor(m);
 
-    if (m_lastZoomLevel != ZOOM) {
+    if (m_resetCameraState || m_lastZoomLevel != ZOOM) {
         if (m_resetCameraState) {
             m_resetCameraState = false;
             m_camera           = CBox(0, 0, m->m_size.x, m->m_size.y);
@@ -104,8 +103,8 @@ void CMonitorZoomController::zoomWithDetachedCamera(Render::CRenderContext& ctx,
 }
 
 void CMonitorZoomController::applyZoomTransform(Render::CRenderContext& ctx, CBox& monbox) {
-    static auto PZOOMRIGID          = CConfigValue<Config::INTEGER>("cursor:zoom_rigid");
-    static auto PZOOMDETACHEDCAMERA = CConfigValue<Config::INTEGER>("cursor:zoom_detached_camera");
+    static auto PZOOMRIGID          = CConfigValue<Config::BOOL>("cursor:zoom_rigid");
+    static auto PZOOMDETACHEDCAMERA = CConfigValue<Config::BOOL>("cursor:zoom_detached_camera");
     const auto  ZOOM                = ctx.m_data.mouseZoomFactor;
 
     if (ZOOM == 1.F)

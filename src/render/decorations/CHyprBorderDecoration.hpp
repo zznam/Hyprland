@@ -32,6 +32,8 @@ class CHyprBorderDecoration : public IHyprWindowDecoration {
     virtual void                       onWindowFocus() override;
 
     int                                borderSize() const;
+    int                                renderBorderSize() const;
+    double                             borderExtent() const;
     void                               invalidateBorderSize();
 
   private:
@@ -42,7 +44,8 @@ class CHyprBorderDecoration : public IHyprWindowDecoration {
 
     CBox                        m_assignedGeometry = {0};
 
-    int                         m_lastBorderSize = -1;
+    double                      m_lastBorderExtent = -1;
+    int                         m_lastBorderSize   = -1;
 
     CAnimatedDecorationGradient m_gradient;
     mutable int                 m_cachedBorderSize     = -1;
@@ -50,5 +53,5 @@ class CHyprBorderDecoration : public IHyprWindowDecoration {
 
     CBox                        assignedBoxGlobal();
     CBox                        assignedBoxGlobal(const Render::SWindowRenderPresentation& presentation);
-    bool                        doesntWantBorders();
+    bool                        doesntWantBorders() const;
 };

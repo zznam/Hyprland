@@ -79,18 +79,19 @@ void CHyprDropShadowDecoration::onWindowFocus() {
 }
 
 void CHyprDropShadowDecoration::damageEntire() {
-    static auto PSHADOWS = CConfigValue<Config::INTEGER>("decoration:shadow:enabled");
+    static auto PSHADOWS = CConfigValue<Config::BOOL>("decoration:shadow:enabled");
 
-    if (*PSHADOWS != 1)
+    if (!(*PSHADOWS))
         return; // disabled
 
     const auto PWINDOW = m_window.lock();
     const auto pos     = PWINDOW->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
     const auto size    = PWINDOW->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
 
-    CBox       shadowBox = {pos.x - m_extents.topLeft.x, pos.y - m_extents.topLeft.y, pos.x + size.x + m_extents.bottomRight.x, pos.y + size.y + m_extents.bottomRight.y};
+    CBox       shadowBox = {pos.x - m_extents.topLeft.x, pos.y - m_extents.topLeft.y, size.x + m_extents.topLeft.x + m_extents.bottomRight.x,
+                            size.y + m_extents.topLeft.y + m_extents.bottomRight.y};
 
-    const auto PWORKSPACE  = PWINDOW->m_workspace;
+    const auto PWORKSPACE  = PWINDOW->presentation().workspace();
     const auto applyOffset = [&](CBox& b) {
         if (PWORKSPACE && PWORKSPACE->m_renderOffset->isBeingAnimated() && !(PWINDOW->m_state & Desktop::View::WINDOW_STATE_PINNED))
             b.translate(PWORKSPACE->m_renderOffset->value());
@@ -134,8 +135,8 @@ void CHyprDropShadowDecoration::draw(Render::CRenderContext& ctx, PHLMONITOR pMo
 }
 
 bool CHyprDropShadowDecoration::canRender(PHLMONITOR pMonitor) {
-    static auto PSHADOWS = CConfigValue<Config::INTEGER>("decoration:shadow:enabled");
-    if (*PSHADOWS != 1)
+    static auto PSHADOWS = CConfigValue<Config::BOOL>("decoration:shadow:enabled");
+    if (!(*PSHADOWS))
         return false; // disabled
 
     const auto PWINDOW = m_window.lock();
@@ -175,10 +176,10 @@ SShadowRenderData CHyprDropShadowDecoration::getRenderData(Render::CRenderContex
     static auto PSHADOWOFFSET = CConfigValue<Config::VEC2>("decoration:shadow:offset");
 
     const auto  BORDERSIZE       = PWINDOW->presentation().borderSize();
-    const auto  ROUNDINGBASE     = PWINDOW->presentation().rounding();
+    const auto  ROUNDINGBASE     = Math::SCornerRadii{PWINDOW->presentation().rounding()};
     const auto  ROUNDINGPOWER    = PWINDOW->presentation().roundingPower();
     const auto  CORRECTIONOFFSET = (BORDERSIZE * (M_SQRT2 - 1) * std::max(2.0 - ROUNDINGPOWER, 0.0));
-    const auto  ROUNDING         = ROUNDINGBASE > 0 ? (ROUNDINGBASE + BORDERSIZE) - CORRECTIONOFFSET : 0;
+    const auto  ROUNDING         = ROUNDINGBASE.expanded(BORDERSIZE - CORRECTIONOFFSET);
     const auto  WORKSPACEOFFSET  = presentation.workspaceOffset;
 
     // draw the shadow
@@ -259,9 +260,9 @@ eDecorationLayer CHyprDropShadowDecoration::getDecorationLayer() {
     return DECORATION_LAYER_BOTTOM;
 }
 
-void CHyprDropShadowDecoration::drawShadowInternal(Render::CRenderContext& ctx, const CBox& box, int round, float roundingPower, int range, const Config::CGradientValueData& grad,
-                                                   float a, const Render::SWindowRenderPresentation& presentation) {
-    static auto PSHADOWSHARP = CConfigValue<Config::INTEGER>("decoration:shadow:sharp");
+void CHyprDropShadowDecoration::drawShadowInternal(Render::CRenderContext& ctx, const CBox& box, Math::SCornerRadii round, float roundingPower, int range,
+                                                   const Config::CGradientValueData& grad, float a, const Render::SWindowRenderPresentation& presentation) {
+    static auto PSHADOWSHARP = CConfigValue<Config::BOOL>("decoration:shadow:sharp");
 
     if (box.w < 1 || box.h < 1)
         return;
@@ -283,9 +284,10 @@ void CHyprDropShadowDecoration::drawShadowInternal(Render::CRenderContext& ctx, 
         g_pHyprRenderer->drawShadow(ctx, box, round, roundingPower, range, grad, a, presentation);
 }
 
-void CHyprDropShadowDecoration::drawShadowInternal(Render::CRenderContext& ctx, const CBox& box, int round, float roundingPower, int range, const Config::CGradientValueData& grad1,
-                                                   const Config::CGradientValueData& grad2, float lerp, float a, const Render::SWindowRenderPresentation& presentation) {
-    static auto PSHADOWSHARP = CConfigValue<Config::INTEGER>("decoration:shadow:sharp");
+void CHyprDropShadowDecoration::drawShadowInternal(Render::CRenderContext& ctx, const CBox& box, Math::SCornerRadii round, float roundingPower, int range,
+                                                   const Config::CGradientValueData& grad1, const Config::CGradientValueData& grad2, float lerp, float a,
+                                                   const Render::SWindowRenderPresentation& presentation) {
+    static auto PSHADOWSHARP = CConfigValue<Config::BOOL>("decoration:shadow:sharp");
 
     if (box.w < 1 || box.h < 1)
         return;

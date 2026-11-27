@@ -1,4 +1,5 @@
 #include "WindowTarget.hpp"
+#include "WindowGeometry.hpp"
 #include "../../desktop/view/window/Window.hpp"
 #include "../../desktop/view/window/WindowPresentation.hpp"
 #include "../../desktop/view/window/WindowStateTracker.hpp"
@@ -9,6 +10,7 @@
 #include "../../protocols/core/Compositor.hpp"
 #include "../../config/shared/workspace/WorkspaceRuleManager.hpp"
 #include "../../output/Monitor.hpp"
+#include "../../output/MonitorWindowTransaction.hpp"
 #include "../../Compositor.hpp"
 #include "../../render/Renderer.hpp"
 #include "../../desktop/state/FloatState.hpp"
@@ -59,8 +61,6 @@ void CWindowTarget::updatePos(uint8_t flags) {
     g_pHyprRenderer->damageWindow(m_window.lock());
     CScopeGuard x([this] { g_pHyprRenderer->damageWindow(m_window.lock()); });
 
-    const bool  CONFIGURECLIENT = !(flags & TARGET_UPDATE_NO_CLIENT_CONFIGURE);
-
     if (!m_space || !m_space->workspace())
         return;
 
@@ -80,14 +80,26 @@ void CWindowTarget::updatePos(uint8_t flags) {
 
     // Non-FS Floating Windows
     if (floating() && m_window && !Fullscreen::controller()->isFullscreen(effectiveWindow())) {
-        m_window->setBox(m_box.logicalBox);
-
-        if (CONFIGURECLIENT)
-            sendWindowSize();
-        m_window->presentation().updateDecorations();
+        updateWindowGeometry(m_box.logicalBox, flags);
 
         return;
     }
+
+    const auto contentBox = [&](const CBox& allocation, PHLWINDOW window) {
+        return windowContentBox(allocation, window->getFullWindowReservedArea(), PMONITOR->m_position, PMONITOR->m_scale);
+    };
+    const auto visualAllocation = [&](PHLWINDOW window) {
+        auto allocation = m_box.visualBox.empty() ? m_box.logicalBox : m_box.visualBox;
+        if (!m_box.visualGaps)
+            return allocation;
+
+        const auto BORDER = window->presentation().borderExtent() > 0 ? window->presentation().borderSize() : 0;
+        const auto GAPS   = innerGapExtentsInPixels(*m_box.visualGaps, BORDER, PMONITOR->m_scale);
+        allocation        = boxWithPixelGaps(allocation, GAPS, PMONITOR->m_position, PMONITOR->m_scale);
+        allocation.w      = std::max(1.0, allocation.w);
+        allocation.h      = std::max(1.0, allocation.h);
+        return allocation;
+    };
 
     /* FS Handling */
 
@@ -101,24 +113,14 @@ void CWindowTarget::updatePos(uint8_t flags) {
     if (const auto FSMODES = Fullscreen::controller()->getFullscreenModes(effectiveWindow());
         FSMODES.internal != Fullscreen::FSMODE_NONE && !Fullscreen::controller()->layoutManagedFS(effectiveWindow())) {
         if (FSMODES.internal == Fullscreen::FSMODE_FULLSCREEN) {
-            m_window->setBox(m_box.logicalBox);
+            updateWindowGeometry(m_box.logicalBox.copy().round(), flags);
 
         } else if (FSMODES.internal == Fullscreen::FSMODE_MAXIMIZED) {
-            CBox nodeBox   = m_box.logicalBox;
-            CBox visualBox = m_box.visualBox.empty() ? nodeBox : m_box.visualBox;
-            nodeBox.round();
-            visualBox.round();
-
             // Reserved area must be updated before this is called
             // Reserved area for all windows in a group are owned by the leading window. Other windows are hidden anyway so this simply ensures their sizes are uniform when FSed
-            const auto RESERVED = effectiveWindow()->getFullWindowReservedArea();
-
-            m_window->setBox({visualBox.pos() + RESERVED.topLeft, visualBox.size() - (RESERVED.topLeft + RESERVED.bottomRight)});
+            updateWindowGeometry(contentBox(visualAllocation(effectiveWindow()), effectiveWindow()), flags);
         }
 
-        m_window->presentation().updateDecorations();
-        if (CONFIGURECLIENT)
-            sendWindowSize();
         return;
     }
 
@@ -126,23 +128,16 @@ void CWindowTarget::updatePos(uint8_t flags) {
     if (const auto FSMODES = Fullscreen::controller()->getFullscreenModes(effectiveWindow());
         FSMODES.internal != Fullscreen::FSMODE_NONE && Fullscreen::controller()->layoutManagedFS(effectiveWindow())) {
 
-        CBox nodeBox   = m_box.logicalBox;
-        CBox visualBox = m_box.visualBox.empty() ? nodeBox : m_box.visualBox;
-        nodeBox.round();
-        visualBox.round();
+        const auto& visualBox = m_box.visualBox.empty() ? m_box.logicalBox : m_box.visualBox;
         if (FSMODES.internal == Fullscreen::FSMODE_FULLSCREEN) {
-            m_window->setBox(visualBox);
+            updateWindowGeometry(visualBox.copy().round(), flags);
         } else if (FSMODES.internal == Fullscreen::FSMODE_MAXIMIZED) {
 
             // Reserved area must be updated before this is called
             // Reserved area for all windows in a group are owned by the leading window. Other windows are hidden anyway so this simply ensures their sizes are uniform when FSed
-            const auto RESERVED = effectiveWindow()->getFullWindowReservedArea();
-            m_window->setBox({visualBox.pos() + RESERVED.topLeft, visualBox.size() - (RESERVED.topLeft + RESERVED.bottomRight)});
+            updateWindowGeometry(contentBox(visualAllocation(effectiveWindow()), effectiveWindow()), flags);
         }
 
-        m_window->presentation().updateDecorations();
-        if (CONFIGURECLIENT)
-            sendWindowSize();
         return;
     }
 
@@ -150,15 +145,11 @@ void CWindowTarget::updatePos(uint8_t flags) {
 
     g_pHyprRenderer->damageWindow(window());
 
-    CBox nodeBox = m_box.logicalBox;
-    nodeBox.round();
+    const auto VISUAL_BOX = visualAllocation(m_window.lock());
+    auto       calcPos    = VISUAL_BOX.pos();
+    auto       calcSize   = VISUAL_BOX.size();
 
-    auto calcPos  = m_box.visualBox.pos();
-    auto calcSize = m_box.visualBox.size();
-
-    if (m_box.visualBox.empty()) {
-        calcPos  = nodeBox.pos();
-        calcSize = nodeBox.size();
+    if (m_box.visualBox.empty() && !m_box.visualGaps) {
         // for gaps outer
         const bool DISPLAYLEFT   = STICKS(m_box.logicalBox.x, MONITOR_WORKAREA.x);
         const bool DISPLAYRIGHT  = STICKS(m_box.logicalBox.x + m_box.logicalBox.w, MONITOR_WORKAREA.x + MONITOR_WORKAREA.w);
@@ -197,13 +188,17 @@ void CWindowTarget::updatePos(uint8_t flags) {
             }
         }
 
-        const auto GAPOFFSETTOPLEFT = Vector2D(sc<double>(DISPLAYLEFT ? 0 : (DISPLAYINVERSELEFT ? 2 * gapsIn.m_left : gapsIn.m_left)), sc<double>(DISPLAYTOP ? 0 : gapsIn.m_top));
+        const auto        BORDER  = m_window->presentation().borderExtent() > 0 ? m_window->presentation().borderSize() : 0;
+        const auto        GAPS    = innerGapExtentsInPixels({{gapsIn.m_left, gapsIn.m_top}, {gapsIn.m_right, gapsIn.m_bottom}}, BORDER, PMONITOR->m_scale);
+        const SBoxExtents OFFSETS = {
+            {DISPLAYLEFT ? 0 : (DISPLAYINVERSELEFT ? innerGapPairInPixels(gapsIn.m_left, BORDER, PMONITOR->m_scale) : GAPS.topLeft.x), DISPLAYTOP ? 0 : GAPS.topLeft.y},
+            {DISPLAYRIGHT ? 0 : (DISPLAYINVERSERIGHT ? innerGapPairInPixels(gapsIn.m_right, BORDER, PMONITOR->m_scale) : GAPS.bottomRight.x),
+             DISPLAYBOTTOM ? 0 : GAPS.bottomRight.y},
+        };
+        const auto GAPPED = boxWithPixelGaps(m_box.logicalBox, OFFSETS, PMONITOR->m_position, PMONITOR->m_scale);
 
-        const auto GAPOFFSETBOTTOMRIGHT =
-            Vector2D(sc<double>(DISPLAYRIGHT ? 0 : (DISPLAYINVERSERIGHT ? 2 * gapsIn.m_right : gapsIn.m_right)), sc<double>(DISPLAYBOTTOM ? 0 : gapsIn.m_bottom));
-
-        calcPos  = calcPos + GAPOFFSETTOPLEFT + ratioPadding / 2;
-        calcSize = calcSize - GAPOFFSETTOPLEFT - GAPOFFSETBOTTOMRIGHT - ratioPadding;
+        calcPos  = GAPPED.pos() + ratioPadding / 2;
+        calcSize = GAPPED.size() - ratioPadding;
     }
 
     if (isPseudo() && m_window) {
@@ -228,13 +223,13 @@ void CWindowTarget::updatePos(uint8_t flags) {
         }
     }
 
-    const auto RESERVED = m_window->getFullWindowReservedArea();
-    calcPos             = calcPos + RESERVED.topLeft;
-    calcSize            = calcSize - (RESERVED.topLeft + RESERVED.bottomRight);
+    const auto CONTENT_BOX = contentBox({calcPos, calcSize}, m_window.lock());
+    calcPos                = CONTENT_BOX.pos();
+    calcSize               = CONTENT_BOX.size();
 
     Vector2D    availableSpace = calcSize;
 
-    static auto PCLAMP_TILED = CConfigValue<Config::INTEGER>("misc:size_limits_tiled");
+    static auto PCLAMP_TILED = CConfigValue<Config::BOOL>("misc:size_limits_tiled");
 
     if (*PCLAMP_TILED) {
         Vector2D minSize = m_window->m_ruleApplicator->minSize().valueOr(Vector2D{MIN_WINDOW_SIZE, MIN_WINDOW_SIZE});
@@ -245,15 +240,26 @@ void CWindowTarget::updatePos(uint8_t flags) {
 
         calcPos.x = std::clamp(calcPos.x, MONITOR_WORKAREA.x, std::max(MONITOR_WORKAREA.x, MONITOR_WORKAREA.x + MONITOR_WORKAREA.w - calcSize.x));
         calcPos.y = std::clamp(calcPos.y, MONITOR_WORKAREA.y, std::max(MONITOR_WORKAREA.y, MONITOR_WORKAREA.y + MONITOR_WORKAREA.h - calcSize.y));
+
+        const auto ALIGNED = windowContentBox({calcPos, calcSize}, {}, PMONITOR->m_position, PMONITOR->m_scale);
+        calcPos            = ALIGNED.pos();
+        calcSize           = ALIGNED.size();
     }
 
-    CBox wb = {calcPos, calcSize};
-    wb.round(); // avoid rounding mess
+    updateWindowGeometry({calcPos, calcSize}, flags);
+}
 
-    m_window->setBox(wb);
+void CWindowTarget::updateWindowGeometry(const CBox& box, uint8_t flags) {
+    const auto MONITOR = m_space && m_space->workspace() ? m_space->workspace()->m_monitor.lock() : m_window->m_monitor.lock();
+    if (MONITOR && MONITOR->m_enabled && MONITOR->m_windowTransaction && m_window->canStageGeometry() && !(flags & TARGET_UPDATE_NO_CLIENT_CONFIGURE)) {
+        if (!MONITOR->m_windowTransaction->queue(m_window.lock(), box))
+            m_window->presentation().updateDecorations();
+    } else {
+        m_window->setBox(box);
+        m_window->presentation().updateDecorations();
+    }
 
-    m_window->presentation().updateDecorations();
-    if (CONFIGURECLIENT)
+    if (!(flags & TARGET_UPDATE_NO_CLIENT_CONFIGURE))
         sendWindowSize();
 }
 
@@ -462,7 +468,7 @@ std::optional<Vector2D> CWindowTarget::calculateExpression(const Math::SExpressi
 }
 
 void CWindowTarget::sendWindowSize(bool force) {
-    const auto PMONITOR = m_window->m_monitor.lock();
+    const auto PMONITOR = m_space && m_space->workspace() ? m_space->workspace()->m_monitor.lock() : m_window->m_monitor.lock();
 
     LOG(Log::TRACE, "sendWindowSize: window:{:x},title:{} with real pos {}, real size {} (force: {})", rc<uintptr_t>(m_window.get()), m_window->metadata().title(),
         m_window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL), m_window->size(Desktop::View::IGeometric::GEOMETRIC_GOAL), force);

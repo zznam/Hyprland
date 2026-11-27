@@ -8,6 +8,7 @@
 
 #include "helpers/memory/Memory.hpp"
 #include "debug/log/Logger.hpp"
+#include "debug/crash/CrashReporter.hpp"
 
 #ifndef NDEBUG
 #ifdef HYPRLAND_DEBUG
@@ -40,9 +41,12 @@
 
 template <typename... Args>
 [[gnu::noinline]] [[gnu::cold]] void assertImpl(int line, std::string_view filename, std::format_string<Args...> reason, Args&&... args) {
-    LOG(Log::CRIT, "\n==========================================================================================\nASSERTION FAILED! \n\n{}\n\nat: line {} in {}",
-        std::format(reason, std::forward<Args>(args)...), line, filename);
-    std::print("Assertion failed! See the log in /tmp/hypr/hyprland.log for more info.");
+    const auto MSG    = std::format(reason, std::forward<Args>(args)...);
+    const auto REASON = std::format("{} (at line {} in {})", MSG, line, filename);
+    LOG(Log::CRIT, "\n==========================================================================================\nASSERTION FAILED! \n\n{}\n\nat: line {} in {}", MSG, line,
+        filename);
+    CrashReporter::setAssertReason(REASON);
+    std::println(stderr, "Assertion failed: {}", REASON);
     raise(SIGABRT);
 }
 
@@ -96,7 +100,7 @@ template <typename... Args>
 #define GLCALL(__CALL__)                                                                                                                                                           \
     {                                                                                                                                                                              \
         __CALL__;                                                                                                                                                                  \
-        static const auto GLDEBUG = CConfigValue<Config::INTEGER>("debug:gl_debugging");                                                                                           \
+        static const auto GLDEBUG = CConfigValue<Config::BOOL>("debug:gl_debugging");                                                                                              \
         if (*GLDEBUG) {                                                                                                                                                            \
             auto err = glGetError();                                                                                                                                               \
             if (err != GL_NO_ERROR) {                                                                                                                                              \

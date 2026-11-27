@@ -57,7 +57,7 @@ CLuaEventHandler::CLuaEventHandler(CLuaCaller& caller) : m_caller(caller) {
     m_listeners.push_back(bus()->m_events.window.openLate.listen([this](PHLWINDOW w) { dispatch("window.open", 1, [&](lua_State* L) { CLuaWindow::push(L, w); }); }));
     m_listeners.push_back(bus()->m_events.window.openEarly.listen([this](PHLWINDOW w) { dispatch("window.open_early", 1, [&](lua_State* L) { CLuaWindow::push(L, w); }); }));
     m_listeners.push_back(bus()->m_events.window.close.listen([this](PHLWINDOW w) { dispatch("window.close", 1, [&](lua_State* L) { CLuaWindow::push(L, w); }); }));
-    m_listeners.push_back(bus()->m_events.window.destroy.listen([this](PHLWINDOWREF w) { dispatch("window.destroy", 1, [&](lua_State* L) { CLuaWindow::push(L, w.lock()); }); }));
+    m_listeners.push_back(bus()->m_events.window.destroy.listen([this](PHLWINDOWREF w) { dispatch("window.destroy", 1, [&](lua_State* L) { CLuaWindow::push(L, w); }); }));
     m_listeners.push_back(bus()->m_events.window.kill.listen([this](PHLWINDOW w) { dispatch("window.kill", 1, [&](lua_State* L) { CLuaWindow::push(L, w); }); }));
     m_listeners.push_back(bus()->m_events.window.active.listen([this](PHLWINDOW w, Desktop::eFocusReason r) {
         dispatch("window.active", 2, [&](lua_State* L) {
@@ -250,24 +250,42 @@ std::expected<void, std::string> CLuaEventHandler::removeCustomEvent(const std::
 
 std::unordered_set<std::string> CLuaEventHandler::knownEvents() {
     std::unordered_set<std::string> EVENTS = {
-        "window.open",         "window.open_early",
-        "window.close",        "window.destroy",
-        "window.kill",         "window.active",
-        "window.urgent",       "window.title",
-        "window.class",        "window.pin",
-        "window.fullscreen",   "window.update_state",
-        "window.update_rules", "window.move_to_workspace",
-        "window.bell",         "window.minimize",
-        "layer.opened",        "layer.closed",
-        "monitor.added",       "monitor.removed",
-        "monitor.focused",     "monitor.layout_changed",
-        "workspace.active",    "workspace.special_active",
-        "workspace.created",   "workspace.created_early",
-        "workspace.removed",   "workspace.move_to_monitor",
-        "config.reloaded",     "config.props_refreshed",
-        "config.unload",       "keybinds.submap",
-        "screenshare.state",   "hyprland.start",
-        "hyprland.shutdown",   "input.keyboard.key",
+        "window.open",
+        "window.open_early",
+        "window.close",
+        "window.destroy",
+        "window.kill",
+        "window.active",
+        "window.urgent",
+        "window.title",
+        "window.class",
+        "window.pin",
+        "window.fullscreen",
+        "window.update_state",
+        "window.update_rules",
+        "window.move_to_workspace",
+        "window.bell",
+        "window.minimize",
+        "layer.opened",
+        "layer.closed",
+        "monitor.added",
+        "monitor.removed",
+        "monitor.focused",
+        "monitor.layout_changed",
+        "workspace.active",
+        "workspace.special_active",
+        "workspace.created",
+        "workspace.created_early",
+        "workspace.removed",
+        "workspace.move_to_monitor",
+        "config.reloaded",
+        "config.props_refreshed",
+        "config.unload",
+        "keybinds.submap",
+        "screenshare.state",
+        "hyprland.start",
+        "hyprland.shutdown",
+        "input.keyboard.key",
     };
     for (auto& kv : Event::bus()->m_events.plugin)
         EVENTS.emplace(kv.first);

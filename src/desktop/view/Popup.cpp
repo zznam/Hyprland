@@ -297,11 +297,8 @@ void CPopup::onUnmap() {
         },
         nullptr);
 
-    // TODO: probably refocus, but without a motion event?
-    // const bool WASLASTFOCUS = g_pSeatManager->state.keyboardFocus == m_pWLSurface->resource() || g_pSeatManager->state.pointerFocus == m_pWLSurface->resource();
-
-    // if (WASLASTFOCUS)
-    //     g_pInputManager->simulateMouseMovement();
+    if (g_pSeatManager->m_state.pointerFocus == m_wlSurface->resource())
+        g_pInputManager->refocusPointer();
 }
 
 void CPopup::onCommit(bool ignoreSiblings) {
@@ -323,7 +320,7 @@ void CPopup::onCommit(bool ignoreSiblings) {
         if (PREV_SIZE != m_lastSize)
             invalidateTreeExtentsCache();
 
-        static auto PLOGDAMAGE = CConfigValue<Config::INTEGER>("debug:log_damage");
+        static auto PLOGDAMAGE = CConfigValue<Config::BOOL>("debug:log_damage");
         if (*PLOGDAMAGE)
             LOG(Log::DEBUG, "Refusing to commit damage from a subsurface of {} because it's invisible.", m_windowOwner.lock());
         return;
@@ -667,7 +664,8 @@ SP<CPopup> CPopup::at(const Vector2D& globalCoords, bool allowsInput) {
         }
     }
 
-    for (auto const& p : popups | std::views::reverse) {
+    SP<CPopup> found;
+    for (const auto& p : popups | std::views::reverse) {
         if (!p)
             continue;
 
@@ -685,20 +683,20 @@ SP<CPopup> CPopup::at(const Vector2D& globalCoords, bool allowsInput) {
 
             const auto BOX = CBox{p->coordsGlobal() + offset, size};
             if (BOX.containsPoint(globalCoords)) {
-                popups.clear();
-                return p;
+                found = p;
+                break;
             }
         } else {
             const auto REGION = p->wlSurface()->resource()->m_current.effectiveInputRegion().translate(p->coordsGlobal());
             if (REGION.containsPoint(globalCoords)) {
-                popups.clear();
-                return p;
+                found = p;
+                break;
             }
         }
     }
 
     popups.clear();
-    return {};
+    return found;
 }
 
 bool CPopup::inert() const {
@@ -734,8 +732,8 @@ std::optional<uint8_t> CPopup::alphaGenericToKey(eAlphaModifiableProp p) {
 }
 
 bool CPopup::shouldBlur() const {
-    static CConfigValue PBLURPOPUPS = CConfigValue<Config::INTEGER>("decoration:blur:popups");
-    static CConfigValue PBLUR       = CConfigValue<Config::INTEGER>("decoration:blur:enabled");
+    static CConfigValue PBLURPOPUPS = CConfigValue<Config::BOOL>("decoration:blur:popups");
+    static CConfigValue PBLUR       = CConfigValue<Config::BOOL>("decoration:blur:enabled");
 
     return *PBLURPOPUPS && *PBLUR;
 }

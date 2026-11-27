@@ -23,6 +23,7 @@
 #include "../helpers/string/StringUtils.hpp"
 #include "OpenGL.hpp"
 #include "Renderer.hpp"
+#include "WindowRenderPresentation.hpp"
 #include "./gl/GLElementRenderer.hpp"
 #include "./gl/GLFramebuffer.hpp"
 #include "./gl/GLTexture.hpp"
@@ -124,7 +125,7 @@ SRenderResult CHyprGLRenderer::endRender(const std::function<void()>& renderingD
 
     const auto        PMONITOR           = m_context.m_data.pMonitor;
     const auto        mode               = m_context.m_mode;
-    static auto       PNVIDIAANTIFLICKER = CConfigValue<Config::INTEGER>("opengl:nvidia_anti_flicker");
+    static auto       PNVIDIAANTIFLICKER = CConfigValue<Config::BOOL>("opengl:nvidia_anti_flicker");
 
     m_context.m_data.damage = m_context.m_pass.render(m_context, m_context.m_data.damage);
 
@@ -246,9 +247,9 @@ SP<ITexture> CHyprGLRenderer::createTexture(uint32_t drmFormat, uint8_t* pixels,
     return makeShared<CGLTexture>(drmFormat, pixels, stride, size, keepDataCopy, opaque);
 }
 
-SP<ITexture> CHyprGLRenderer::createTexture(const Aquamarine::SDMABUFAttrs& attrs, bool opaque) {
+SP<ITexture> CHyprGLRenderer::createTexture(const Aquamarine::SDMABUFAttrs& attrs, bool opaque, const NColorManagement::SColorRepresentation& representation) {
     g_pHyprOpenGL->makeEGLCurrent();
-    const auto image = g_pHyprOpenGL->createEGLImage(attrs);
+    const auto image = g_pHyprOpenGL->createEGLImage(attrs, representation);
     if (!image)
         return nullptr;
     return makeShared<CGLTexture>(attrs, image, opaque);
@@ -338,21 +339,21 @@ void CHyprGLRenderer::blend(bool enabled) {
     g_pHyprOpenGL->blend(enabled);
 }
 
-void CHyprGLRenderer::drawShadow(CRenderContext& ctx, const CBox& box, int round, float roundingPower, int range, const Config::CGradientValueData& color, float a,
+void CHyprGLRenderer::drawShadow(CRenderContext& ctx, const CBox& box, Math::SCornerRadii round, float roundingPower, int range, const Config::CGradientValueData& color, float a,
                                  const Render::SWindowRenderPresentation& presentation) {
     g_pHyprOpenGL->renderRoundedShadow(ctx, box, round, roundingPower, range, color, a, presentation);
 }
 
-void CHyprGLRenderer::drawShadow(CRenderContext& ctx, const CBox& box, int round, float roundingPower, int range, const Config::CGradientValueData& grad1,
+void CHyprGLRenderer::drawShadow(CRenderContext& ctx, const CBox& box, Math::SCornerRadii round, float roundingPower, int range, const Config::CGradientValueData& grad1,
                                  const Config::CGradientValueData& grad2, float lerp, float a, const Render::SWindowRenderPresentation& presentation) {
     g_pHyprOpenGL->renderRoundedShadow(ctx, box, round, roundingPower, range, grad1, grad2, lerp, a, presentation);
 }
 
-void CHyprGLRenderer::drawGlow(CRenderContext& ctx, const CBox& box, int round, float roundingPower, int range, const Config::CGradientValueData& color, float a) {
+void CHyprGLRenderer::drawGlow(CRenderContext& ctx, const CBox& box, Math::SCornerRadii round, float roundingPower, int range, const Config::CGradientValueData& color, float a) {
     g_pHyprOpenGL->renderInnerGlow(ctx, box, round, roundingPower, range, color, 0, a);
 }
 
-void CHyprGLRenderer::drawGlow(CRenderContext& ctx, const CBox& box, int round, float roundingPower, int range, const Config::CGradientValueData& grad1,
+void CHyprGLRenderer::drawGlow(CRenderContext& ctx, const CBox& box, Math::SCornerRadii round, float roundingPower, int range, const Config::CGradientValueData& grad1,
                                const Config::CGradientValueData& grad2, float lerp, float a) {
     g_pHyprOpenGL->renderInnerGlow(ctx, box, round, roundingPower, range, grad1, grad2, lerp, 0, a);
 }
@@ -386,9 +387,9 @@ bool CHyprGLRenderer::blurProviderRequiresLiveBlur() const {
 }
 
 void CHyprGLRenderer::preRender(PHLMONITOR pMonitor) {
-    static auto PBLURNEWOPTIMIZE = CConfigValue<Config::INTEGER>("decoration:blur:new_optimizations");
-    static auto PBLURXRAY        = CConfigValue<Config::INTEGER>("decoration:blur:xray");
-    static auto PBLUR            = CConfigValue<Config::INTEGER>("decoration:blur:enabled");
+    static auto PBLURNEWOPTIMIZE = CConfigValue<Config::BOOL>("decoration:blur:new_optimizations");
+    static auto PBLURXRAY        = CConfigValue<Config::BOOL>("decoration:blur:xray");
+    static auto PBLUR            = CConfigValue<Config::BOOL>("decoration:blur:enabled");
 
     // Resource changes can invalidate the blur framebuffer, so resolve them before checking its state.
     (void)pMonitor->resources();
@@ -400,14 +401,14 @@ void CHyprGLRenderer::preRender(PHLMONITOR pMonitor) {
         return;
 
     auto windowShouldBeBlurred = [](PHLWINDOW pWindow) -> bool {
-        if (!pWindow || pWindow->m_ruleApplicator->noBlur().valueOrDefault())
+        if (!pWindow || !pWindow->wlSurface() || !pWindow->wlSurface()->resource() || pWindow->m_ruleApplicator->noBlur().valueOrDefault())
             return false;
 
         if (pWindow->wlSurface()->small() && !pWindow->wlSurface()->m_fillIgnoreSmall)
             return true;
 
         const auto  PSURFACE   = pWindow->wlSurface()->resource();
-        const auto  PWORKSPACE = pWindow->m_workspace;
+        const auto  PWORKSPACE = pWindow->presentation().workspace();
         const float A          = pWindow->presentation().alphaValue(Desktop::View::WINDOW_ALPHA_FADE) * pWindow->presentation().alphaValue(Desktop::View::WINDOW_ALPHA_FULLSCREEN) *
             pWindow->presentation().alphaValue(Desktop::View::WINDOW_ALPHA_LAYOUT) * pWindow->presentation().alphaValue(Desktop::View::WINDOW_ALPHA_ACTIVE) *
             PWORKSPACE->m_alpha->value();
@@ -426,9 +427,10 @@ void CHyprGLRenderer::preRender(PHLMONITOR pMonitor) {
     for (const auto& w : Desktop::windowState()->windows()) {
         const auto& XRAY_RULE           = w->m_ruleApplicator->xray();
         const bool  XRAY                = XRAY_RULE.hasValue() ? XRAY_RULE.valueOrDefault() : *PBLURXRAY;
-        const bool  ON_ACTIVE_WORKSPACE = w->m_workspace && (w->m_workspace == pMonitor->m_activeWorkspace || w->m_workspace == pMonitor->m_activeSpecialWorkspace);
-        if (!ON_ACTIVE_WORKSPACE || !w->mapped() || !w->acceptsInput() || !w->alphaNonZero() || ((w->isFloating() || w->onSpecialWorkspace()) && !XRAY) ||
-            !windowShouldBeBlurred(w))
+        const auto  PWORKSPACE          = w->presentation().workspace();
+        const bool  ON_ACTIVE_WORKSPACE = PWORKSPACE && (PWORKSPACE == pMonitor->m_activeWorkspace || PWORKSPACE == pMonitor->m_activeSpecialWorkspace);
+        if (!ON_ACTIVE_WORKSPACE || !w->mapped() || w->isHidden() || !w->presentation().renderPresentation().alphaVisible || !shouldRenderWindow(w, pMonitor) ||
+            ((w->isFloating() || w->presentation().onSpecialWorkspace()) && !XRAY) || !windowShouldBeBlurred(w))
             continue;
 
         hasWindows = true;

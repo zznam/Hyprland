@@ -22,10 +22,8 @@ runs:
           git \
           glaze \
           glm \
-          glslang \
           go \
           gtest \
-          hyprlang \
           hyprcursor \
           hyprland-protocols \
           jq \
@@ -58,7 +56,6 @@ runs:
           pkgconf \
           pugixml \
           scdoc \
-          sdbus-cpp \
           seatd \
           systemd \
           tomlplusplus \

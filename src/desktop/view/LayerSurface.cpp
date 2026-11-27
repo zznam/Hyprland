@@ -172,6 +172,12 @@ void CLayerSurface::onDestroy() {
     Desktop::layerState()->removeSafe(SELF);
 }
 
+// Monitor only recognises a window as FS if it is FSMODE_FULLSCREEN so that's guaranteed here
+bool CLayerSurface::isHiddenByFullscreen(const PHLMONITOR& monitor) const {
+    return monitor && m_layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP && !(m_flags & LAYER_FLAG_ABOVE_FULLSCREEN) &&
+        Fullscreen::controller()->getPresentedFullscreenModes(monitor->getCurrentWorkspace()).internal == Fullscreen::FSMODE_FULLSCREEN;
+}
+
 void CLayerSurface::onMap() {
     LOG(Log::DEBUG, "LayerSurface {:x} mapped", rc<uintptr_t>(m_layerSurface.get()));
 
@@ -188,7 +194,7 @@ void CLayerSurface::onMap() {
     if (!PMONITOR)
         return;
 
-    static auto PALLOWNEWTOPOVERFULLSCREEN = CConfigValue<Config::INTEGER>("misc:allow_new_top_layers_over_existing_fullscreen");
+    static auto PALLOWNEWTOPOVERFULLSCREEN = CConfigValue<Config::BOOL>("layers:allow_new_top_layers_over_existing_fullscreen");
 
     // if PALLOWNEWTOPOVERFULLSCREEN = true: guard against making top layer elements, like bars, visible ontop of fullscreen
     // Monitor only recognises a window as FS if it is FSMODE_FULLSCREEN so that's guaranteed here
@@ -222,7 +228,7 @@ void CLayerSurface::onMap() {
     }
 
     // update pointer focus
-    g_pInputManager->simulateMouseMovement();
+    g_pInputManager->refocusPointer();
 
     m_position = Vector2D(m_geometry.x, m_geometry.y);
 
@@ -233,9 +239,8 @@ void CLayerSurface::onMap() {
     m_realSize->setConfig(Config::animationTree()->getAnimationPropertyConfig("layersIn"));
     m_alpha.get(LS_ALPHA_FADE)->setConfig(Config::animationTree()->getAnimationPropertyConfig("fadeLayersIn"));
 
-    // If fullscreen window present check if layer is allowed above it
-    // Monitor only recognises a window as FS if it is FSMODE_FULLSCREEN so that's guaranteed here
-    if (!Fullscreen::controller()->hasFullscreen(PMONITOR, true) || (m_flags & LAYER_FLAG_ABOVE_FULLSCREEN))
+    // Only top layers should be hidden by a fullscreen window.
+    if (!isHiddenByFullscreen(PMONITOR))
         m_animationController.apply(m_animationController.animateIn());
 
     IPC::Socket2::sock()->postEvent({.event = "openlayer", .data = m_namespace});
@@ -349,7 +354,7 @@ void CLayerSurface::onCommit() {
 
             m_layer = NEW_LAYER;
 
-            static auto PALLOWNEWTOPOVERFULLSCREEN = CConfigValue<Config::INTEGER>("misc:allow_new_top_layers_over_existing_fullscreen");
+            static auto PALLOWNEWTOPOVERFULLSCREEN = CConfigValue<Config::BOOL>("layers:allow_new_top_layers_over_existing_fullscreen");
 
             // if PALLOWNEWTOPOVERFULLSCREEN = true: guard against making top layer elements, like bars, visible ontop of fullscreen
             // Monitor only recognises a window as FS if it is FSMODE_FULLSCREEN so that's guaranteed here
@@ -358,8 +363,8 @@ void CLayerSurface::onCommit() {
             else
                 m_flags &= ~LAYER_FLAG_ABOVE_FULLSCREEN;
 
-            // if in fullscreen, only overlay can be above.
-            *m_alpha.get(LS_ALPHA_FADE) = Fullscreen::controller()->hasFullscreen(PMONITOR, true) ? (m_layer >= ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY ? 1.F : 0.F) : 1.F;
+            // if in fullscreen, only top layers that are not allowed above it are hidden.
+            *m_alpha.get(LS_ALPHA_FADE) = isHiddenByFullscreen(PMONITOR) ? 0.F : 1.F;
 
             if (m_layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND || m_layer == ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM)
                 PMONITOR->m_blurFBDirty = true; // so that blur is recalc'd
@@ -514,7 +519,7 @@ std::optional<uint8_t> CLayerSurface::alphaGenericToKey(eAlphaModifiableProp p) 
 }
 
 bool CLayerSurface::shouldBlur() const {
-    static auto PBLUR = CConfigValue<Config::INTEGER>("decoration:blur:enabled");
+    static auto PBLUR = CConfigValue<Config::BOOL>("decoration:blur:enabled");
     if (!*PBLUR)
         return false;
 

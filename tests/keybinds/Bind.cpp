@@ -83,6 +83,35 @@ TEST(Keybinds, UnsidedModifierMatchesEitherSide) {
               BIND_MATCH_FULL);
 }
 
+TEST(Keybinds, HeldModifierKeysymDoesNotOverrideXkbMask) {
+    auto controlBind = makeBind({"SUPER", "CONTROL", "W"});
+    auto capsBind    = makeBind({"SUPER", "CAPS", "W"});
+    ASSERT_TRUE(controlBind.has_value());
+    ASSERT_TRUE(capsBind.has_value());
+
+    const auto       SUPER = resolvedKey("SUPER_L", 133, HL_MODIFIER_META);
+    const auto       CAPS  = resolvedKey("Caps_Lock", 66, HL_MODIFIER_CAPS);
+    const auto       W     = resolvedKey("W", 25);
+    const std::array held  = {SUPER, CAPS, W};
+
+    // caps:ctrl_modifier keeps the Caps_Lock keysym but activates Control.
+    SBindEventContext context{
+        .heldKeys     = held,
+        .trigger      = W,
+        .modifiersNow = HL_MODIFIER_META | HL_MODIFIER_CTRL,
+    };
+    EXPECT_EQ(controlBind->matches(context), BIND_MATCH_FULL);
+    EXPECT_EQ(capsBind->matches(context), BIND_MATCH_NONE);
+
+    context.modifiersNow = HL_MODIFIER_META | HL_MODIFIER_CAPS;
+    EXPECT_EQ(controlBind->matches(context), BIND_MATCH_NONE);
+    EXPECT_EQ(capsBind->matches(context), BIND_MATCH_FULL);
+
+    context.modifiersNow |= HL_MODIFIER_CTRL;
+    EXPECT_EQ(controlBind->matches(context), BIND_MATCH_NONE);
+    EXPECT_EQ(capsBind->matches(context), BIND_MATCH_NONE);
+}
+
 TEST(Keybinds, SidedModifierAfterOrdinaryChordKeysDoesNotPartiallyMatch) {
     auto result = makeBind({"SHIFT_L", "A", "B"});
     ASSERT_TRUE(result.has_value());
@@ -117,6 +146,115 @@ TEST(Keybinds, SingleKeyAllowsOtherHeldKeys) {
                   .trigger  = K,
               }),
               BIND_MATCH_FULL);
+}
+
+TEST(Keybinds, ModifierOnlyPressAllowsOtherHeldKeys) {
+    auto result = makeBind({"ALT_R"});
+    ASSERT_TRUE(result.has_value());
+
+    const auto       ALT  = resolvedKey("ALT_R", 108, HL_MODIFIER_ALT);
+    const auto       A    = resolvedKey("A", 38);
+    const auto       K    = resolvedKey("K", 45);
+    const std::array held = {A, K, ALT};
+
+    for (const auto modifiers : {HL_MODIFIER_NONE, HL_MODIFIER_ALT}) {
+        SBindEventContext context{
+            .heldKeys         = held,
+            .trigger          = ALT,
+            .modifiersNow     = modifiers,
+            .modifiersAtPress = modifiers,
+        };
+        EXPECT_EQ(result->matches(context), BIND_MATCH_FULL);
+
+        context.pressed = false;
+        EXPECT_EQ(result->matches(context), BIND_MATCH_NONE);
+    }
+}
+
+TEST(Keybinds, ModifierOnlyBindRequiresItsTrigger) {
+    const auto       ALT  = resolvedKey("ALT_R", 108, HL_MODIFIER_ALT);
+    const auto       K    = resolvedKey("K", 45);
+    const std::array held = {ALT, K};
+
+    for (const auto flags : {sc<eBindFlags>(0), BIND_FLAG_RELEASE}) {
+        auto result = makeBind({"ALT_R"}, flags);
+        ASSERT_TRUE(result.has_value());
+
+        for (const bool pressed : {true, false}) {
+            SBindEventContext context{
+                .heldKeys         = held,
+                .trigger          = K,
+                .modifiersNow     = HL_MODIFIER_ALT,
+                .modifiersAtPress = HL_MODIFIER_ALT,
+                .pressed          = pressed,
+            };
+            EXPECT_EQ(result->matches(context), BIND_MATCH_NONE);
+
+            context.trigger.reset();
+            EXPECT_EQ(result->matches(context), BIND_MATCH_NONE);
+        }
+    }
+}
+
+TEST(Keybinds, ModifierOnlyBindPreservesSideAndMaskConstraints) {
+    const auto       LEFT_ALT  = resolvedKey("ALT_L", 64, HL_MODIFIER_ALT);
+    const auto       RIGHT_ALT = resolvedKey("ALT_R", 108, HL_MODIFIER_ALT);
+    const auto       K         = resolvedKey("K", 45);
+    const std::array leftHeld  = {LEFT_ALT, K};
+    const std::array rightHeld = {RIGHT_ALT, K};
+    const std::array bothHeld  = {LEFT_ALT, RIGHT_ALT, K};
+
+    for (const auto flags : {sc<eBindFlags>(0), BIND_FLAG_RELEASE}) {
+        auto result = makeBind({"ALT_R"}, flags);
+        ASSERT_TRUE(result.has_value());
+
+        SBindEventContext context{
+            .heldKeys         = leftHeld,
+            .trigger          = LEFT_ALT,
+            .modifiersNow     = HL_MODIFIER_ALT,
+            .modifiersAtPress = HL_MODIFIER_ALT,
+            .pressed          = flags != BIND_FLAG_RELEASE,
+        };
+        EXPECT_EQ(result->matches(context), BIND_MATCH_NONE);
+
+        context.heldKeys = bothHeld;
+        context.trigger  = RIGHT_ALT;
+        EXPECT_EQ(result->matches(context), BIND_MATCH_NONE);
+
+        context.heldKeys         = rightHeld;
+        context.modifiersNow     = HL_MODIFIER_ALT | HL_MODIFIER_CTRL;
+        context.modifiersAtPress = HL_MODIFIER_ALT | HL_MODIFIER_CTRL;
+        EXPECT_EQ(result->matches(context), BIND_MATCH_NONE);
+    }
+}
+
+TEST(Keybinds, ModifierOnlyChordRequiresLastTrigger) {
+    const auto       SHIFT        = resolvedKey("SHIFT_L", 50, HL_MODIFIER_SHIFT);
+    const auto       ALT          = resolvedKey("ALT_R", 108, HL_MODIFIER_ALT);
+    const auto       K            = resolvedKey("K", 45);
+    const std::array held         = {SHIFT, K, ALT};
+    const std::array missingShift = {K, ALT};
+
+    for (const auto flags : {sc<eBindFlags>(0), BIND_FLAG_RELEASE}) {
+        auto result = makeBind({"SHIFT_L", "ALT_R"}, flags);
+        ASSERT_TRUE(result.has_value());
+
+        SBindEventContext context{
+            .heldKeys         = held,
+            .trigger          = ALT,
+            .modifiersNow     = HL_MODIFIER_SHIFT | HL_MODIFIER_ALT,
+            .modifiersAtPress = HL_MODIFIER_SHIFT | HL_MODIFIER_ALT,
+            .pressed          = flags != BIND_FLAG_RELEASE,
+        };
+        EXPECT_EQ(result->matches(context), BIND_MATCH_FULL);
+
+        context.trigger = SHIFT;
+        EXPECT_EQ(result->matches(context), BIND_MATCH_NONE);
+
+        context.heldKeys = missingShift;
+        context.trigger  = ALT;
+        EXPECT_EQ(result->matches(context), BIND_MATCH_NONE);
+    }
 }
 
 TEST(Keybinds, MultiKeyMatchingIsExactAndOrdered) {
@@ -316,6 +454,29 @@ TEST(Keybinds, ModifierReleaseBindIncludesTriggerModifier) {
                   .pressed          = false,
               }),
               BIND_MATCH_FULL);
+}
+
+TEST(Keybinds, ModifierOnlyReleaseAllowsOtherHeldKeys) {
+    auto result = makeBind({"SUPER", "SUPER_L"}, BIND_FLAG_RELEASE);
+    ASSERT_TRUE(result.has_value());
+
+    const auto       SUPER         = resolvedKey("SUPER_L", 133, HL_MODIFIER_META);
+    const auto       ONE           = resolvedKey("1", 10);
+    const std::array modifierFirst = {SUPER, ONE};
+    const std::array modifierLast  = {ONE, SUPER};
+
+    EXPECT_EQ(result->matches({.heldKeys = modifierLast, .trigger = SUPER}), BIND_MATCH_PARTIAL);
+
+    for (const auto& held : {modifierFirst, modifierLast}) {
+        EXPECT_EQ(result->matches({
+                      .heldKeys         = held,
+                      .trigger          = SUPER,
+                      .modifiersNow     = HL_MODIFIER_NONE,
+                      .modifiersAtPress = HL_MODIFIER_NONE,
+                      .pressed          = false,
+                  }),
+                  BIND_MATCH_FULL);
+    }
 }
 
 TEST(Keybinds, CatchAllContextHonorsSubmapAndModifiers) {

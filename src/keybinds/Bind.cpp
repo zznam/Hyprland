@@ -200,7 +200,9 @@ eBindMatch CBind::matches(const SBindEventContext& ctx) const {
     if (!boundSidedMods.empty() && matchKeySets(boundSidedMods, heldSidedMods) != BIND_MATCH_FULL)
         return BIND_MATCH_NONE;
 
-    const auto KEY_MATCH = boundKeys.size() > 1 && ctx.trigger && !ctx.trigger->modifier ? matchKeyChord(boundKeys, heldKeys, *ctx.trigger) : matchKeySets(boundKeys, heldKeys);
+    const auto KEY_MATCH       = boundKeys.empty() ?
+        BIND_MATCH_FULL :
+        (boundKeys.size() > 1 && ctx.trigger && !ctx.trigger->modifier ? matchKeyChord(boundKeys, heldKeys, *ctx.trigger) : matchKeySets(boundKeys, heldKeys));
     const bool TRIGGER_MATCHES = ctx.trigger && !m_keys.empty() && m_keys.back().matches(*ctx.trigger);
     const bool TRIGGER_ONLY    = boundKeys.size() == 1 || ((m_flags & BIND_FLAG_RELEASE) && (boundKeys.empty() || !ctx.pressed));
 
@@ -227,12 +229,8 @@ bool CBind::matchesContext(const SBindEventContext& ctx) const {
         return false;
 
     auto effectiveMods = ctx.pressed ? ctx.modifiersNow : ctx.modifiersAtPress;
-    if (ctx.pressed) {
-        for (const auto& key : ctx.heldKeys) {
-            if (key.modifier)
-                effectiveMods |= *key.modifier;
-        }
-    } else if (ctx.trigger && ctx.trigger->modifier)
+    // Only the trigger's modifier may be missing from XKB; held keys can have remapped modifier actions.
+    if (ctx.trigger && ctx.trigger->modifier)
         effectiveMods |= *ctx.trigger->modifier;
 
     return (m_flags & BIND_FLAG_IGNORE_MODS) || effectiveMods == m_modmask;

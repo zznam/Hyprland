@@ -255,6 +255,24 @@ bool CDragStateController::dragEnd() {
     if (!draggingTarget)
         return false;
 
+    // Consume the last motion's deferred warp before drop handling can replace its geometry.
+    if (const auto WINDOW = draggingTarget->window(); validMapped(WINDOW)) {
+        if (const auto GROUP = WINDOW->grouping().group()) {
+            const auto WINDOWS = GROUP->windows();
+            for (const auto& member : WINDOWS) {
+                if (const auto W = member.lock(); validMapped(W))
+                    W->flushPendingGeometry();
+
+                if (m_target.lock() != draggingTarget)
+                    return true;
+            }
+        } else
+            WINDOW->flushPendingGeometry();
+    }
+
+    if (m_target.lock() != draggingTarget)
+        return true;
+
     Hyprutils::Utils::CScopeGuard notifyEnded([this] { m_events.ended.emit(); });
 
     m_mouseMoveEventCount = 1;
@@ -356,20 +374,20 @@ void CDragStateController::mouseMove(const Vector2D& mousePos) {
         m_events.motion.emit();
     }
 
-    static auto TIMER = std::chrono::high_resolution_clock::now(), MSTIMER = TIMER;
+    static auto TIMER = std::chrono::steady_clock::now(), MSTIMER = TIMER;
 
     const auto  DELTA     = Vector2D(mousePos.x - m_beginDragXY.x, mousePos.y - m_beginDragXY.y);
     const auto  TICKDELTA = Vector2D(mousePos.x - m_lastDragXY.x, mousePos.y - m_lastDragXY.y);
 
-    static auto SNAPENABLED = CConfigValue<Config::INTEGER>("general:snap:enabled");
+    static auto SNAPENABLED = CConfigValue<Config::BOOL>("general:snap:enabled");
 
-    const auto  TIMERDELTA    = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - TIMER).count();
-    const auto  MSDELTA       = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - MSTIMER).count();
+    const auto  TIMERDELTA    = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - TIMER).count();
+    const auto  MSDELTA       = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - MSTIMER).count();
     const auto  MSMONITOR     = 1000.0 / (g_pHyprRenderer->m_mostHzMonitor ? g_pHyprRenderer->m_mostHzMonitor->m_refreshRate : 60.0);
     static int  totalMs       = 0;
     bool        canSkipUpdate = true;
 
-    MSTIMER = std::chrono::high_resolution_clock::now();
+    MSTIMER = std::chrono::steady_clock::now();
 
     if (m_mouseMoveEventCount == 1)
         totalMs = 0;
@@ -385,7 +403,7 @@ void CDragStateController::mouseMove(const Vector2D& mousePos) {
     if ((abs(TICKDELTA.x) < 1.f && abs(TICKDELTA.y) < 1.f) || (TIMERDELTA < MSMONITOR && canSkipUpdate && (m_dragMode != MBIND_MOVE)))
         return;
 
-    TIMER = std::chrono::high_resolution_clock::now();
+    TIMER = std::chrono::steady_clock::now();
 
     m_lastDragXY = mousePos;
 

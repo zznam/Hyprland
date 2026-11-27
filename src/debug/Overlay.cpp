@@ -110,7 +110,7 @@ COverlay::COverlay() {
 }
 
 void CMonitorOverlay::renderData(PHLMONITOR pMonitor, float durationUs) {
-    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::BOOL>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;
@@ -126,7 +126,7 @@ void CMonitorOverlay::renderData(PHLMONITOR pMonitor, float durationUs) {
 }
 
 void CMonitorOverlay::renderDataNoOverlay(PHLMONITOR pMonitor, float durationUs) {
-    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::BOOL>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;
@@ -142,14 +142,14 @@ void CMonitorOverlay::renderDataNoOverlay(PHLMONITOR pMonitor, float durationUs)
 }
 
 void CMonitorOverlay::frameData(PHLMONITOR pMonitor) {
-    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::BOOL>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;
 
     m_monitor = pMonitor;
 
-    const auto NOW = std::chrono::high_resolution_clock::now();
+    const auto NOW = std::chrono::steady_clock::now();
     if (m_lastFrame.time_since_epoch().count() != 0)
         m_lastFrametimes.emplace_back(std::chrono::duration_cast<std::chrono::microseconds>(NOW - m_lastFrame).count() / 1000.F);
 
@@ -327,7 +327,7 @@ Vector2D CMonitorOverlay::size() const {
 }
 
 void COverlay::renderData(PHLMONITOR pMonitor, float durationUs) {
-    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::BOOL>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;
@@ -336,7 +336,7 @@ void COverlay::renderData(PHLMONITOR pMonitor, float durationUs) {
 }
 
 void COverlay::renderDataNoOverlay(PHLMONITOR pMonitor, float durationUs) {
-    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::BOOL>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;
@@ -345,7 +345,7 @@ void COverlay::renderDataNoOverlay(PHLMONITOR pMonitor, float durationUs) {
 }
 
 void COverlay::frameData(PHLMONITOR pMonitor) {
-    static auto PDEBUGOVERLAY = CConfigValue<Config::INTEGER>("debug:overlay");
+    static auto PDEBUGOVERLAY = CConfigValue<Config::BOOL>("debug:overlay");
 
     if (!*PDEBUGOVERLAY)
         return;

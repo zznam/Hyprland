@@ -2,6 +2,7 @@
 
 #include <config/lua/types/LuaConfigBool.hpp>
 #include <config/lua/types/LuaConfigColor.hpp>
+#include <config/lua/types/LuaConfigCorners.hpp>
 #include <config/lua/types/LuaConfigCssGap.hpp>
 #include <config/lua/types/LuaConfigFloat.hpp>
 #include <config/lua/types/LuaConfigFontWeight.hpp>
@@ -12,6 +13,7 @@
 
 #include <config/values/types/BoolValue.hpp>
 #include <config/values/types/ColorValue.hpp>
+#include <config/values/types/CornersValue.hpp>
 #include <config/values/types/CssGapValue.hpp>
 #include <config/values/types/FloatValue.hpp>
 #include <config/values/types/FontWeightValue.hpp>
@@ -19,8 +21,11 @@
 #include <config/values/types/IntValue.hpp>
 #include <config/values/types/StringValue.hpp>
 #include <config/values/types/Vec2Value.hpp>
+#include <config/values/ConfigValues.hpp>
 
 #include <gtest/gtest.h>
+
+#include <algorithm>
 
 extern "C" {
 #include <lauxlib.h>
@@ -119,12 +124,129 @@ TEST(ConfigLuaUtils, fromGenericValueReturnsNullForUnsupportedType) {
     EXPECT_EQ(out.get(), nullptr);
 }
 
+TEST(ConfigLuaUtils, cornersDispatchUsesTypeAndCopiesArbitraryBounds) {
+    CLuaState  state;
+    const auto lua     = state.get();
+    const auto refresh = Supplementary::REFRESH_WINDOW_STATES | Supplementary::REFRESH_BLUR_FB;
+    const auto source  = makeShared<Values::CCornersValue>("arbitrary:corners", "", -10, Values::SCornersValueOptions{.min = -20, .max = 200, .refresh = refresh});
+    const auto out     = fromGenericValue(source);
+    ASSERT_NE(out.get(), nullptr);
+    const auto value = dynamic_cast<CLuaConfigCorners*>(out.get());
+    ASSERT_NE(value, nullptr);
+    EXPECT_EQ(out->refreshBits(), refresh);
+    EXPECT_EQ(*out->underlying(), typeid(CCornersData));
+
+    for (const auto bound : {-20, 200}) {
+        lua_pushinteger(lua, bound);
+        ASSERT_EQ(value->parse(lua).errorCode, PARSE_ERROR_OK);
+        EXPECT_TRUE(value->parsed().isUniform());
+        EXPECT_EQ(value->parsed().m_topLeft, bound);
+        EXPECT_EQ(lua_gettop(lua), 1);
+        lua_pop(lua, 1);
+    }
+
+    ASSERT_EQ(luaL_dostring(lua, "return {top_left = -20, top_right = 200, bottom_right = -10, bottom_left = 150}"), LUA_OK);
+    ASSERT_EQ(value->parse(lua).errorCode, PARSE_ERROR_OK);
+    lua_pop(lua, 1);
+    EXPECT_EQ(value->toString(), "-20 200 -10 150");
+
+    for (const auto bound : {-21, 201}) {
+        lua_pushinteger(lua, bound);
+        EXPECT_EQ(value->parse(lua).errorCode, PARSE_ERROR_OUT_OF_RANGE);
+        EXPECT_EQ(lua_gettop(lua), 1);
+        EXPECT_EQ(value->toString(), "-20 200 -10 150");
+        lua_pop(lua, 1);
+
+        for (const auto field : {"top_left", "top_right", "bottom_right", "bottom_left"}) {
+            SCOPED_TRACE(field);
+            ASSERT_EQ(luaL_dostring(lua, std::format("return {{{} = {}}}", field, bound).c_str()), LUA_OK);
+            EXPECT_EQ(value->parse(lua).errorCode, PARSE_ERROR_OUT_OF_RANGE);
+            EXPECT_EQ(lua_gettop(lua), 1);
+            EXPECT_EQ(value->toString(), "-20 200 -10 150");
+            lua_pop(lua, 1);
+        }
+    }
+
+    value->reset();
+    value->push(lua);
+    EXPECT_TRUE(lua_isinteger(lua, -1));
+    EXPECT_EQ(lua_tointeger(lua, -1), -10);
+}
+
 TEST(ConfigLuaUtils, fromGenericValueCopiesRefreshBits) {
     const auto REFRESH = Config::Supplementary::REFRESH_LAYOUTS | Config::Supplementary::REFRESH_WINDOW_STATES;
 
     auto       out = fromGenericValue(makeShared<Values::CIntValue>("a", "", 1, Values::SIntValueOptions{.refresh = REFRESH}));
     ASSERT_NE(out.get(), nullptr);
     EXPECT_EQ(out->refreshBits(), REFRESH);
+}
+
+TEST(ConfigLuaUtils, fromGenericValuePropagatesWholeMonitorCapability) {
+    CLuaState  state;
+    const auto lua = state.get();
+
+    for (const bool supported : {false, true}) {
+        SCOPED_TRACE(supported);
+        auto out   = fromGenericValue(makeShared<Values::CGradientValue>("a", "", CHyprColor(0xFF112233), Values::SGradientValueOptions{.supportsWholeMonitor = supported}));
+        auto value = dynamic_cast<CLuaConfigGradient*>(out.get());
+        ASSERT_NE(value, nullptr);
+        const auto original = value->parsed();
+
+        ASSERT_EQ(luaL_dostring(lua, "return { colors = { '0xFF445566' }, angle = 90, whole_monitor = true }"), LUA_OK);
+        EXPECT_EQ(value->parse(lua).errorCode, supported ? PARSE_ERROR_OK : PARSE_ERROR_BAD_VALUE);
+        EXPECT_EQ(value->setByUser(), supported);
+        if (supported) {
+            EXPECT_TRUE(value->parsed().m_wholeMonitor);
+            EXPECT_EQ(value->toString(), "0xFF445566 whole_monitor 90deg");
+        } else {
+            EXPECT_EQ(value->parsed(), original);
+            EXPECT_EQ(value->parsed().m_colorsOkLabA, original.m_colorsOkLabA);
+        }
+
+        lua_pushboolean(lua, false);
+        lua_setfield(lua, -2, "whole_monitor");
+        EXPECT_EQ(value->parse(lua).errorCode, PARSE_ERROR_OK);
+        lua_pop(lua, 1);
+        EXPECT_FALSE(value->parsed().m_wholeMonitor);
+        EXPECT_EQ(value->toString(), "0xFF445566 90deg");
+    }
+}
+
+TEST(ConfigLuaUtils, wholeMonitorIsSupportedOnlyByBorderGradients) {
+    static constexpr std::string_view SUPPORTED[] = {
+        "general:col.active_border", "general:col.inactive_border", "general:col.nogroup_border",     "general:col.nogroup_border_active",
+        "group:col.border_active",   "group:col.border_inactive",   "group:col.border_locked_active", "group:col.border_locked_inactive",
+    };
+
+    CLuaState  state;
+    const auto lua            = state.get();
+    size_t     supportedCount = 0;
+
+    for (const auto& generic : Values::getConfigValues()) {
+        if (!dynamic_cast<Values::CGradientValue*>(generic.get()))
+            continue;
+
+        const std::string_view name = generic->name();
+        SCOPED_TRACE(name);
+        const bool supported = std::ranges::find(SUPPORTED, name) != std::end(SUPPORTED);
+        auto       out       = fromGenericValue(generic);
+        ASSERT_NE(out.get(), nullptr);
+        ASSERT_EQ(luaL_dostring(lua, "return { colors = { '0xFF112233', '0xFF445566' }, whole_monitor = true }"), LUA_OK);
+        EXPECT_EQ(out->parse(lua).errorCode, supported ? PARSE_ERROR_OK : PARSE_ERROR_BAD_VALUE);
+        lua_pop(lua, 1);
+
+        if (!supported)
+            continue;
+
+        ++supportedCount;
+        EXPECT_NE(out->refreshBits() & Supplementary::REFRESH_WINDOW_STATES, 0);
+        if (!name.starts_with("group:"))
+            continue;
+
+        EXPECT_NE(out->refreshBits() & Supplementary::REFRESH_GRADIENTS_GROUPBAR, 0);
+    }
+
+    EXPECT_EQ(supportedCount, std::size(SUPPORTED));
 }
 
 TEST(ConfigValues, valueOptionsCopyDeprecationNotice) {
@@ -138,6 +260,7 @@ TEST(ConfigValues, valueOptionsCopyDeprecationNotice) {
 
     checkNotice(*makeShared<Values::CBoolValue>("a", "", false, Values::SBoolValueOptions{.deprecationNotice = NOTICE}));
     checkNotice(*makeShared<Values::CColorValue>("a", "", 0, Values::SColorValueOptions{.deprecationNotice = NOTICE}));
+    checkNotice(*makeShared<Values::CCornersValue>("a", "", 0, Values::SCornersValueOptions{.deprecationNotice = NOTICE}));
     checkNotice(*makeShared<Values::CCssGapValue>("a", "", 0, Values::SCssGapValueOptions{.deprecationNotice = NOTICE}));
     checkNotice(*makeShared<Values::CFloatValue>("a", "", 0.F, Values::SFloatValueOptions{.deprecationNotice = NOTICE}));
     checkNotice(*makeShared<Values::CFontWeightValue>("a", "", 400, Values::SFontWeightValueOptions{.deprecationNotice = NOTICE}));
@@ -214,13 +337,22 @@ TEST(ConfigLuaUtils, fromGenericValueCopiesValidationMetadata) {
     }
 
     {
-        auto out   = fromGenericValue(makeShared<Values::CCssGapValue>("a", "", 1, Values::SCssGapValueOptions{.min = 0, .max = 2}));
+        auto out   = fromGenericValue(makeShared<Values::CCssGapValue>("a", "", 1.25, Values::SCssGapValueOptions{.min = -0.5, .max = 2.5}));
         auto value = dynamic_cast<CLuaConfigCssGap*>(out.get());
         ASSERT_NE(value, nullptr);
 
-        lua_pushinteger(lua, 3);
-        EXPECT_EQ(value->parse(lua).errorCode, PARSE_ERROR_OUT_OF_RANGE);
-        lua_pop(lua, 1);
+        EXPECT_DOUBLE_EQ(value->parsed().m_top, 1.25);
+        for (const double gap : {-0.5, 2.5}) {
+            lua_pushnumber(lua, gap);
+            EXPECT_EQ(value->parse(lua).errorCode, PARSE_ERROR_OK);
+            lua_pop(lua, 1);
+            EXPECT_DOUBLE_EQ(value->parsed().m_top, gap);
+        }
+        for (const double gap : {-0.75, 2.75}) {
+            lua_pushnumber(lua, gap);
+            EXPECT_EQ(value->parse(lua).errorCode, PARSE_ERROR_OUT_OF_RANGE);
+            lua_pop(lua, 1);
+        }
     }
 }
 

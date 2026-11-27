@@ -72,13 +72,14 @@ Vector2D CHyprXWaylandManager::waylandToXWaylandCoords(const Vector2D& coord) {
 }
 
 Vector2D CHyprXWaylandManager::waylandToXWaylandCoords(const Vector2D& coord, PHLMONITOR preferredMonitor) {
-    static auto PXWLFORCESCALEZERO = CConfigValue<Config::INTEGER>("xwayland:force_zero_scaling");
+    static auto PXWLFORCESCALEZERO = CConfigValue<Config::BOOL>("xwayland:force_zero_scaling");
 
     PHLMONITOR  pMonitor = preferredMonitor;
     if (!pMonitor) {
         double bestDistance = __FLT_MAX__;
         for (const auto& m : State::monitorState()->monitors()) {
-            const auto SIZ = *PXWLFORCESCALEZERO ? m->m_transformedSize : m->m_size;
+            // coord is in our logical space, so match it against the logical size even when X11 gets physical pixels
+            const auto SIZ = m->m_size;
 
             double     distance = vecToRectDistanceSquared(coord, {m->m_position.x, m->m_position.y}, {m->m_position.x + SIZ.x - 1, m->m_position.y + SIZ.y - 1});
 
@@ -109,7 +110,7 @@ Vector2D CHyprXWaylandManager::xwaylandToWaylandCoords(const Vector2D& coord) {
 
 Vector2D CHyprXWaylandManager::xwaylandToWaylandCoords(const Vector2D& coord, PHLMONITOR preferredMonitor) {
 
-    static auto PXWLFORCESCALEZERO = CConfigValue<Config::INTEGER>("xwayland:force_zero_scaling");
+    static auto PXWLFORCESCALEZERO = CConfigValue<Config::BOOL>("xwayland:force_zero_scaling");
 
     PHLMONITOR  pMonitor = preferredMonitor;
     if (!pMonitor) {

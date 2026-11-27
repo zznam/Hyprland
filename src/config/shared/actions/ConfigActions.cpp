@@ -1,5 +1,6 @@
 #include "ConfigActions.hpp"
 #include "../parserUtils/ParserUtils.hpp"
+#include "../rounding/Rounding.hpp"
 #include "../../ConfigManager.hpp"
 #include "../../../desktop/state/FocusState.hpp"
 #include "../../../desktop/state/GlobalWindowController.hpp"
@@ -59,7 +60,7 @@ static PHLWINDOW xtract(std::optional<PHLWINDOW> window) {
 }
 
 static void updateRelativeCursorCoords() {
-    static auto PNOWARPS = CConfigValue<Config::INTEGER>("cursor:no_warps");
+    static auto PNOWARPS = CConfigValue<Config::BOOL>("cursor:no_warps");
 
     if (*PNOWARPS)
         return;
@@ -70,7 +71,7 @@ static void updateRelativeCursorCoords() {
 
 static void switchToWindow(PHLWINDOW PWINDOWTOCHANGETO, bool forceFSCycle = false) {
     static auto PFOLLOWMOUSE = CConfigValue<Config::INTEGER>("input:follow_mouse");
-    static auto PNOWARPS     = CConfigValue<Config::INTEGER>("cursor:no_warps");
+    static auto PNOWARPS     = CConfigValue<Config::BOOL>("cursor:no_warps");
 
     const auto  PLASTWINDOW = Desktop::focusState()->window();
 
@@ -111,7 +112,7 @@ static bool tryMoveFocusToMonitor(PHLMONITOR monitor) {
         return false;
 
     static auto PFOLLOWMOUSE = CConfigValue<Config::INTEGER>("input:follow_mouse");
-    static auto PNOWARPS     = CConfigValue<Config::INTEGER>("cursor:no_warps");
+    static auto PNOWARPS     = CConfigValue<Config::BOOL>("cursor:no_warps");
 
     auto        constraintGuard = g_pInputManager->pointerConstraints().suspend();
 
@@ -307,7 +308,8 @@ ActionResult Actions::pinWindow(eTogglableAction action, std::optional<PHLWINDOW
     if (!PMONITOR)
         return actionError("Window has no monitor", eActionErrorLevel::WARNING, eActionErrorCode::INVALID_STATE);
 
-    if (!PMONITOR->m_activeWorkspace || !PMONITOR->m_activeWorkspace->space())
+    const auto TARGETWORKSPACE = PMONITOR->getCurrentWorkspace();
+    if (!TARGETWORKSPACE || !TARGETWORKSPACE->space())
         return actionError("Monitor has no active workspace", eActionErrorLevel::WARNING, eActionErrorCode::INVALID_STATE);
 
     const auto LAYOUTTARGET = window->layoutTarget();
@@ -320,9 +322,9 @@ ActionResult Actions::pinWindow(eTogglableAction action, std::optional<PHLWINDOW
         window->m_state &= ~Desktop::View::WINDOW_STATE_PINNED;
     window->stateTracker().scheduleUpdate();
     window->updateFullscreenInputState();
-    *window->presentation().alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN) = window->isBlockedByFullscreen() ? 0.F : 1.F;
+    window->presentation().setFullscreenAlpha(window->isBlockedByFullscreen() ? 0.F : 1.F);
 
-    LAYOUTTARGET->assignToSpace(PMONITOR->m_activeWorkspace->space());
+    LAYOUTTARGET->assignToSpace(TARGETWORKSPACE->space());
     window->m_ruleApplicator->propertiesChanged(Desktop::Rule::RULE_PROP_PINNED);
 
     const auto PWORKSPACE = window->m_workspace;
@@ -446,11 +448,11 @@ ActionResult Actions::moveToWorkspace(const std::string& ws, bool silent, std::o
 }
 
 ActionResult Actions::moveFocus(Math::eDirection dir) {
-    static auto PFULLCYCLE      = CConfigValue<Config::INTEGER>("binds:movefocus_cycles_fullscreen");
+    static auto PFULLCYCLE      = CConfigValue<Config::BOOL>("binds:movefocus_cycles_fullscreen");
     static auto PNEWTAKESOVERFS = CConfigValue<Config::INTEGER>("misc:on_focus_under_fullscreen");
 
-    static auto PGROUPCYCLE      = CConfigValue<Config::INTEGER>("binds:movefocus_cycles_groupfirst");
-    static auto PMONITORFALLBACK = CConfigValue<Config::INTEGER>("binds:window_direction_monitor_fallback");
+    static auto PGROUPCYCLE      = CConfigValue<Config::BOOL>("binds:movefocus_cycles_groupfirst");
+    static auto PMONITORFALLBACK = CConfigValue<Config::BOOL>("binds:window_direction_monitor_fallback");
 
     const auto  PLASTWINDOW = Desktop::focusState()->window();
     if (!PLASTWINDOW || !PLASTWINDOW->mapped() || !PLASTWINDOW->acceptsInput()) {
@@ -484,7 +486,7 @@ ActionResult Actions::moveFocus(Math::eDirection dir) {
     if (*PMONITORFALLBACK && tryMoveFocusToMonitor(State::monitorState()->query().relativeTo(Desktop::focusState()->monitor()).inDirection(dir).run()))
         return {};
 
-    static auto PNOFALLBACK = CConfigValue<Config::INTEGER>("general:no_focus_fallback");
+    static auto PNOFALLBACK = CConfigValue<Config::BOOL>("general:no_focus_fallback");
     if (*PNOFALLBACK)
         return actionError(std::format("Nothing to focus to in direction {}", Math::toString(dir)), eActionErrorLevel::INFO, eActionErrorCode::NOT_FOUND);
 
@@ -781,7 +783,7 @@ ActionResult Actions::alterZOrder(const std::string& mode, std::optional<PHLWIND
 
 template <typename T>
 static void parsePropTrivial(Desktop::Types::COverridableVar<T>& prop, const std::string& s) {
-    static_assert(std::is_same_v<T, bool> || std::is_same_v<T, Hyprlang::INT> || std::is_same_v<T, int> || std::is_same_v<T, Hyprlang::FLOAT> || std::is_same_v<T, std::string>,
+    static_assert(std::is_same_v<T, bool> || std::is_same_v<T, Config::INTEGER> || std::is_same_v<T, int> || std::is_same_v<T, Config::FLOAT> || std::is_same_v<T, std::string>,
                   "Invalid type passed to parsePropTrivial");
 
     if (s == "unset") {
@@ -795,13 +797,13 @@ static void parsePropTrivial(Desktop::Types::COverridableVar<T>& prop, const std
                 prop.increment(true, Desktop::Types::PRIORITY_SET_PROP);
             else
                 prop = Desktop::Types::COverridableVar<T>(truthy(s), Desktop::Types::PRIORITY_SET_PROP);
-        } else if constexpr (std::is_same_v<T, Hyprlang::INT> || std::is_same_v<T, int>) {
+        } else if constexpr (std::is_same_v<T, Config::INTEGER> || std::is_same_v<T, int>) {
             if (s.starts_with("relative")) {
                 const auto VAL = std::stoi(s.substr(s.find(' ') + 1));
                 prop.increment(VAL, Desktop::Types::PRIORITY_SET_PROP);
             } else
                 prop = Desktop::Types::COverridableVar<T>(std::stoull(s), Desktop::Types::PRIORITY_SET_PROP);
-        } else if constexpr (std::is_same_v<T, Hyprlang::FLOAT>) {
+        } else if constexpr (std::is_same_v<T, Config::FLOAT>) {
             if (s.starts_with("relative")) {
                 const auto VAL = std::stof(s.substr(s.find(' ') + 1));
                 prop.increment(VAL, Desktop::Types::PRIORITY_SET_PROP);
@@ -942,9 +944,17 @@ ActionResult Actions::setProp(const std::string& PROP, const std::string& VAL, s
             parsePropTrivial(PWINDOW->m_ruleApplicator->idleInhibitMode(), VAL);
         else if (PROP == "border_size")
             parsePropTrivial(PWINDOW->m_ruleApplicator->borderSize(), VAL);
-        else if (PROP == "rounding")
-            parsePropTrivial(PWINDOW->m_ruleApplicator->rounding(), VAL);
-        else if (PROP == "rounding_power")
+        else if (PROP == "rounding") {
+            auto& rounding = PWINDOW->m_ruleApplicator->rounding();
+            if (VAL == "unset")
+                rounding.unset(Desktop::Types::PRIORITY_SET_PROP);
+            else {
+                const auto value = Rounding::parseProp(VAL, PWINDOW->m_ruleApplicator->roundingValue());
+                if (!value)
+                    return actionError(value.error(), eActionErrorLevel::ERROR, eActionErrorCode::INVALID_ARGUMENT);
+                rounding.set(*value, Desktop::Types::PRIORITY_SET_PROP);
+            }
+        } else if (PROP == "rounding_power")
             parsePropTrivial(PWINDOW->m_ruleApplicator->roundingPower(), VAL);
         else if (PROP == "scroll_mouse")
             parsePropTrivial(PWINDOW->m_ruleApplicator->scrollMouse(), VAL);
@@ -1023,11 +1033,11 @@ ActionResult Actions::setGroupActive(int index, std::optional<PHLWINDOW> w) {
     return {};
 }
 
-ActionResult Actions::changeWorkspace(PHLWORKSPACE ws) {
+ActionResult Actions::changeWorkspace(PHLWORKSPACE ws, bool noFocus) {
     if (!ws)
         return actionError("Invalid workspace", eActionErrorLevel::WARNING, eActionErrorCode::NO_TARGET);
 
-    static auto PHIDESPECIALONWORKSPACECHANGE = CConfigValue<Config::INTEGER>("binds:hide_special_on_workspace_change");
+    static auto PHIDESPECIALONWORKSPACECHANGE = CConfigValue<Config::BOOL>("binds:hide_special_on_workspace_change");
     static auto PWORKSPACECENTERON            = CConfigValue<Config::INTEGER>("binds:workspace_center_on");
 
     const auto  PMONITOR = Desktop::focusState()->monitor();
@@ -1048,11 +1058,18 @@ ActionResult Actions::changeWorkspace(PHLWORKSPACE ws) {
 
     updateRelativeCursorCoords();
 
-    Desktop::focusState()->rawMonitorFocus(PMONITORWORKSPACEOWNER);
+    if (!noFocus)
+        Desktop::focusState()->rawMonitorFocus(PMONITORWORKSPACEOWNER);
 
     if (*PHIDESPECIALONWORKSPACECHANGE)
         PMONITORWORKSPACEOWNER->setSpecialWorkspace(nullptr);
-    PMONITORWORKSPACEOWNER->changeWorkspace(ws, false, true);
+    PMONITORWORKSPACEOWNER->changeWorkspace(ws, false, true, noFocus);
+
+    if (noFocus) {
+        // Everything else is only relevant when we want to change the focus.
+        // Thus, when `noFocus` is `true`, we can exit early here.
+        return {};
+    }
 
     if (PMONITOR != PMONITORWORKSPACEOWNER) {
         Vector2D middle  = PMONITORWORKSPACEOWNER->middle();
@@ -1071,8 +1088,6 @@ ActionResult Actions::changeWorkspace(PHLWORKSPACE ws) {
     if (!g_pInputManager->m_lastFocusOnLS) {
         if (Desktop::focusState()->surface())
             g_pInputManager->sendMotionEventsToFocused();
-        else
-            g_pInputManager->simulateMouseMovement();
     }
 
     const static auto PWARPONWORKSPACECHANGE = CConfigValue<Config::INTEGER>("cursor:warp_on_change_workspace");
@@ -1091,9 +1106,9 @@ ActionResult Actions::changeWorkspace(PHLWORKSPACE ws) {
     return {};
 }
 
-ActionResult Actions::changeWorkspace(const std::string& ws) {
+ActionResult Actions::changeWorkspace(const std::string& ws, bool noFocus) {
     const auto WORKSPACE = resolveWorkspaceForChange(ws);
-    const auto res       = Actions::changeWorkspace(WORKSPACE);
+    const auto res       = Actions::changeWorkspace(WORKSPACE, noFocus);
     if (WORKSPACE)
         WORKSPACE->ready();
     return res;
@@ -1374,7 +1389,7 @@ static void moveWindowIntoGroupHelper(PHLWINDOW pWindow, PHLWINDOW pWindowInDire
 }
 
 static void moveWindowOutOfGroupHelper(PHLWINDOW pWindow, Math::eDirection direction = Math::DIRECTION_DEFAULT) {
-    static auto BFOCUSREMOVEDWINDOW = CConfigValue<Config::INTEGER>("group:focus_removed_window");
+    static auto BFOCUSREMOVEDWINDOW = CConfigValue<Config::BOOL>("group:focus_removed_window");
 
     if (!pWindow->grouping().group())
         return;
@@ -1395,7 +1410,7 @@ static void moveWindowOutOfGroupHelper(PHLWINDOW pWindow, Math::eDirection direc
 }
 
 ActionResult Actions::moveIntoGroup(Math::eDirection direction, std::optional<PHLWINDOW> w) {
-    static auto PIGNOREGROUPLOCK = CConfigValue<Config::INTEGER>("binds:ignore_group_lock");
+    static auto PIGNOREGROUPLOCK = CConfigValue<Config::BOOL>("binds:ignore_group_lock");
 
     if (!*PIGNOREGROUPLOCK && Desktop::windowState()->groupsLocked())
         return {};
@@ -1418,7 +1433,7 @@ ActionResult Actions::moveIntoGroup(Math::eDirection direction, std::optional<PH
 }
 
 ActionResult Actions::moveOutOfGroup(Math::eDirection direction, std::optional<PHLWINDOW> w) {
-    static auto PIGNOREGROUPLOCK = CConfigValue<Config::INTEGER>("binds:ignore_group_lock");
+    static auto PIGNOREGROUPLOCK = CConfigValue<Config::BOOL>("binds:ignore_group_lock");
 
     if (!*PIGNOREGROUPLOCK && Desktop::windowState()->groupsLocked())
         return actionError("Groups locked", eActionErrorLevel::INFO, eActionErrorCode::INVALID_STATE);
@@ -1452,7 +1467,7 @@ ActionResult Actions::moveGroupWindow(bool forward) {
 }
 
 ActionResult Actions::moveWindowOrGroup(Math::eDirection direction, std::optional<PHLWINDOW> w) {
-    static auto PIGNOREGROUPLOCK = CConfigValue<Config::INTEGER>("binds:ignore_group_lock");
+    static auto PIGNOREGROUPLOCK = CConfigValue<Config::BOOL>("binds:ignore_group_lock");
 
     auto        window = xtract(w);
     if (!window)
@@ -1675,7 +1690,7 @@ ActionResult Actions::sendKeyState(Input::ModifierMask modMask, uint32_t key, ui
     return result;
 }
 
-ActionResult Actions::global(const std::string& action) {
+ActionResult Actions::global(const std::string& action, const std::optional<bool> event) {
     const auto COLONPOS = action.find_first_of(':');
     if (COLONPOS == std::string::npos)
         return {};
@@ -1689,7 +1704,11 @@ ActionResult Actions::global(const std::string& action) {
     if (!PROTO::globalShortcuts->isTaken(APPID, NAME))
         return {};
 
-    PROTO::globalShortcuts->sendGlobalShortcutEvent(APPID, NAME, Config::Actions::state()->m_passPressed);
+    bool pressed = Config::Actions::state()->m_passPressed;
+    if (event.has_value())
+        pressed = event.value();
+
+    PROTO::globalShortcuts->sendGlobalShortcutEvent(APPID, NAME, pressed);
 
     return {};
 }
@@ -1805,7 +1824,7 @@ ActionResult Actions::cycleNext(const bool next, std::optional<bool> onlyTiled, 
 }
 
 ActionResult Actions::moveIntoOrCreateGroup(Math::eDirection dir, std::optional<PHLWINDOW> w) {
-    static auto PIGNOREGROUPLOCK = CConfigValue<Hyprlang::INT>("binds:ignore_group_lock");
+    static auto PIGNOREGROUPLOCK = CConfigValue<Config::INTEGER>("binds:ignore_group_lock");
 
     if (!*PIGNOREGROUPLOCK && Desktop::windowState()->groupsLocked())
         return {};

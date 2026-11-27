@@ -249,7 +249,11 @@ static int dsp_event(lua_State* L) {
 }
 
 static int dsp_global(lua_State* L) {
-    return requestBindRelease(L, Internal::checkResult(L, CA::global(lua_tostring(L, lua_upvalueindex(1)))));
+    std::optional<bool> event = std::nullopt;
+    auto                i     = lua_upvalueindex(2);
+    if (lua_isboolean(L, i))
+        event = lua_toboolean(L, i);
+    return requestBindRelease(L, Internal::checkResult(L, CA::global(lua_tostring(L, lua_upvalueindex(1)), event)));
 }
 
 static int dsp_forceRendererReload(lua_State* L) {
@@ -363,9 +367,14 @@ static int hlGlobal(lua_State* L) {
     auto str = Check::string(L, 1);
     if (!str)
         return Internal::configError(L, std::format("global: bad argument 1: {}", str.error()));
+    auto activate = Check::boolean(L, 2);
 
     lua_pushstring(L, str->c_str());
-    lua_pushcclosure(L, dsp_global, 1);
+    if (activate.has_value())
+        lua_pushboolean(L, activate.value());
+    else
+        lua_pushnil(L);
+    lua_pushcclosure(L, dsp_global, 2);
     return 1;
 }
 
@@ -1105,8 +1114,8 @@ static int dsp_focusCurrentOrLast(lua_State* L) {
     return Internal::checkResult(L, CA::focusCurrentOrLast());
 }
 
-static int dsp_changeWorkspace(lua_State* L) {
-    return Internal::checkResult(L, CA::changeWorkspace(std::string(lua_tostring(L, lua_upvalueindex(1)))));
+static int dsp_focusWorkspace(lua_State* L) {
+    return Internal::checkResult(L, CA::changeWorkspace(std::string(lua_tostring(L, lua_upvalueindex(1))), false));
 }
 
 static int dsp_focusWorkspaceOnCurrentMonitor(lua_State* L) {
@@ -1143,7 +1152,7 @@ static int hlFocus(lua_State* L) {
         if (onCurrentMon.value_or(false))
             lua_pushcclosure(L, dsp_focusWorkspaceOnCurrentMonitor, 1);
         else
-            lua_pushcclosure(L, dsp_changeWorkspace, 1);
+            lua_pushcclosure(L, dsp_focusWorkspace, 1);
 
         return 1;
     }
@@ -1317,6 +1326,26 @@ static int hlWorkspaceSwapMonitors(lua_State* L) {
     return 1;
 }
 
+static int dsp_showWorkspace(lua_State* L) {
+    const auto TARGET = State::Workspace::resolver()->getWorkspaceTargetFromString(lua_tostring(L, lua_upvalueindex(1)));
+    if (!TARGET.valid())
+        return Internal::dispatcherError(L, "Invalid workspace", ERR, C_INVARG);
+    const auto PWORKSPACE = State::Workspace::state()->find(TARGET);
+    if (!PWORKSPACE)
+        return Internal::dispatcherError(L, "Workspace not found", WARN, C_NOTFOUND);
+    return Internal::checkResult(L, CA::changeWorkspace(PWORKSPACE, true));
+}
+
+static int hlWorkspaceShow(lua_State* L) {
+    if (!lua_istable(L, 1))
+        return Internal::configError(L, "hl.workspace.show: expected a table, e.g. { workspace }");
+
+    auto wsStr = Internal::tableOptWorkspaceSelector(L, 1, "workspace", "hl.workspace.show");
+    lua_pushstring(L, wsStr->c_str());
+    lua_pushcclosure(L, dsp_showWorkspace, 1);
+    return 1;
+}
+
 void Internal::registerDispatcherBindings(lua_State* L) {
     lua_newtable(L);
 
@@ -1364,6 +1393,7 @@ void Internal::registerDispatcherBindings(lua_State* L) {
         Internal::setDispatcherFn(L, "rename", hlWorkspaceRename, 1);
         Internal::setDispatcherFn(L, "change_id", hlWorkspaceChangeID, 1);
         Internal::setDispatcherFn(L, "move", hlWorkspaceMove, 1);
+        Internal::setDispatcherFn(L, "show", hlWorkspaceShow, 1);
         Internal::setDispatcherFn(L, "swap_monitors", hlWorkspaceSwapMonitors, 1);
         Internal::setDispatcherFn(L, "toggle_special", hlWorkspaceToggleSpecial, 1);
         lua_setfield(L, -2, "workspace");
@@ -1379,7 +1409,7 @@ void Internal::registerDispatcherBindings(lua_State* L) {
         Internal::setDispatcherFn(L, "layout", hlLayout, 1);
         Internal::setDispatcherFn(L, "dpms", hlDpms, 1);
         Internal::setDispatcherFn(L, "event", hlEvent, 1);
-        Internal::setDispatcherFn(L, "global", hlGlobal, 1);
+        Internal::setDispatcherFn(L, "global", hlGlobal, 2);
         Internal::setDispatcherFn(L, "force_renderer_reload", hlForceRendererReload, 0);
         Internal::setDispatcherFn(L, "force_idle", hlForceIdle, 1);
         Internal::setDispatcherFn(L, "release_input_capture", hlReleaseInputCapture, 0);

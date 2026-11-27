@@ -23,17 +23,24 @@
 #include "../surfaceTree/SubsurfaceOwner.hpp"
 #include "WindowBackend.hpp"
 
+class CMonitorWindowTransactionTest;
+
 namespace Config {
     class CWorkspaceRule;
 }
 
 namespace Render {
     struct SWindowRenderPresentation;
+    class IFramebuffer;
 }
 
 namespace Layout {
     class ITarget;
     class CWindowTarget;
+}
+
+namespace Monitor {
+    class CMonitorWindowTransaction;
 }
 
 namespace Desktop {
@@ -150,6 +157,15 @@ namespace Desktop::View {
 
         virtual eViewType                                         type() const override;
         virtual bool                                              mapped() const override;
+        Vector2D                                                  position(eGeometricValueType type) const override;
+        Vector2D                                                  size(eGeometricValueType type) const override;
+        CBox                                                      geometricBox(eGeometricValueType type) const override;
+        void                                                      move(const Vector2D& position) override;
+        void                                                      resize(const Vector2D& size) override;
+        void                                                      setBox(const CBox& box) override;
+        void                                                      finishAnimation() override;
+        bool                                                      canStageGeometry() const;
+        void                                                      flushPendingGeometry();
         virtual bool                                              focusAvailable() const override;
         virtual std::optional<CBox>                               logicalBox() const override;
         virtual bool                                              desktopComponent() const override;
@@ -224,6 +240,7 @@ namespace Desktop::View {
         bool                       onSpecialWorkspace();
         const std::string&         workspaceAddress() const;
         void                       activate(bool force = false);
+        void                       markUrgent();
         bool                       clampWindowSize(const std::optional<Vector2D> minSize, const std::optional<Vector2D> maxSize);
         float                      getScrollMouse();
         float                      getScrollTouchpad();
@@ -264,6 +281,31 @@ namespace Desktop::View {
         PHLWINDOWREF m_self;
 
       private:
+        struct SPendingGeometry {
+            CBox box;
+            bool warp  = false;
+            bool ready = false;
+        };
+
+        void                                   stageGeometry(const CBox& box);
+        bool                                   pendingGeometryResizes() const;
+        void                                   applyPendingGeometry();
+        void                                   discardPendingGeometry();
+        void                                   cancelPendingGeometry();
+        std::optional<SPendingGeometry>        m_pendingGeometry;
+        WP<Monitor::CMonitorWindowTransaction> m_geometryTransaction;
+        bool                                   m_geometryTransactionsBlocked = false;
+
+        struct SCloseSnapshots {
+            SP<Render::IFramebuffer> monitor;
+            SP<Render::IFramebuffer> workspace;
+        };
+        std::optional<SCloseSnapshots> m_closeSnapshots;
+        void                           captureCloseSnapshots();
+
+        friend class Monitor::CMonitorWindowTransaction;
+        friend class ::CMonitorWindowTransactionTest;
+
         void         initialize();
         void         attachBackendListeners();
         void         mapWindow();
@@ -306,6 +348,7 @@ namespace Desktop::View {
         struct {
             CHyprSignalListener map;
             CHyprSignalListener unmap;
+            CHyprSignalListener preUnmap;
             CHyprSignalListener commit;
             CHyprSignalListener destroy;
             CHyprSignalListener surfaceChanged;

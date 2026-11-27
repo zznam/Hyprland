@@ -8,6 +8,7 @@
 #include "../types/LuaConfigFloat.hpp"
 #include "../types/LuaConfigGradient.hpp"
 #include "../types/LuaConfigInt.hpp"
+#include "../types/LuaConfigCorners.hpp"
 #include "../types/LuaConfigString.hpp"
 #include "../types/LuaConfigVec2.hpp"
 #include "../types/LuaConfigExpressionVec2.hpp"
@@ -19,6 +20,7 @@
 #include "../../../desktop/rule/windowRule/WindowRuleEffectContainer.hpp"
 #include "../../../keybinds/Manager.hpp"
 #include "../../shared/actions/ConfigActions.hpp"
+#include "../../shared/rounding/Rounding.hpp"
 
 #include <functional>
 #include <optional>
@@ -65,7 +67,7 @@ namespace Config::Lua::Bindings::Internal {
         {"content", []() -> ILuaConfigValue* { return new CLuaConfigString(STRVAL_EMPTY); }, WE::WINDOW_RULE_EFFECT_CONTENT},
         {"no_close_for", []() -> ILuaConfigValue* { return new CLuaConfigInt(0); }, WE::WINDOW_RULE_EFFECT_NOCLOSEFOR},
         {"scrolling_width", []() -> ILuaConfigValue* { return new CLuaConfigFloat(0.F); }, WE::WINDOW_RULE_EFFECT_SCROLLING_WIDTH},
-        {"rounding", []() -> ILuaConfigValue* { return new CLuaConfigInt(0, 0, 100); }, WE::WINDOW_RULE_EFFECT_ROUNDING},
+        {"rounding", []() -> ILuaConfigValue* { return new CLuaConfigCorners(0, 0, Rounding::MAX_RADIUS); }, WE::WINDOW_RULE_EFFECT_ROUNDING},
         {"border_size", []() -> ILuaConfigValue* { return new CLuaConfigInt(0); }, WE::WINDOW_RULE_EFFECT_BORDER_SIZE},
         {"rounding_power", []() -> ILuaConfigValue* { return new CLuaConfigFloat(2.F, 1.F, 10.F); }, WE::WINDOW_RULE_EFFECT_ROUNDING_POWER},
         {"scroll_mouse", []() -> ILuaConfigValue* { return new CLuaConfigFloat(1.F, 0.01F, 10.F); }, WE::WINDOW_RULE_EFFECT_SCROLL_MOUSE},
@@ -76,7 +78,7 @@ namespace Config::Lua::Bindings::Internal {
         {"tag", []() -> ILuaConfigValue* { return new CLuaConfigString(STRVAL_EMPTY); }, WE::WINDOW_RULE_EFFECT_TAG},
         {"max_size", []() -> ILuaConfigValue* { return new CLuaConfigExpressionVec2(); }, WE::WINDOW_RULE_EFFECT_MAX_SIZE},
         {"min_size", []() -> ILuaConfigValue* { return new CLuaConfigExpressionVec2(); }, WE::WINDOW_RULE_EFFECT_MIN_SIZE},
-        {"border_color", []() -> ILuaConfigValue* { return new CLuaConfigGradient(CHyprColor(0xFF000000)); }, WE::WINDOW_RULE_EFFECT_BORDER_COLOR},
+        {"border_color", []() -> ILuaConfigValue* { return new CLuaConfigGradient(CHyprColor(0xFF000000), true); }, WE::WINDOW_RULE_EFFECT_BORDER_COLOR},
         {"persistent_size", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, WE::WINDOW_RULE_EFFECT_PERSISTENT_SIZE},
         {"allows_input", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, WE::WINDOW_RULE_EFFECT_ALLOWS_INPUT},
         {"dim_around", []() -> ILuaConfigValue* { return new CLuaConfigBool(false); }, WE::WINDOW_RULE_EFFECT_DIM_AROUND},

@@ -1,4 +1,5 @@
 #include "WindowPresentation.hpp"
+#include "WindowCornerGeometry.hpp"
 
 #include "Window.hpp"
 #include "../../../animation/AnimationManager.hpp"
@@ -7,19 +8,20 @@
 #include "../../../layout/target/Target.hpp"
 #include "../../../managers/fullscreen/FullscreenController.hpp"
 #include "../../../output/Monitor.hpp"
+#include "../../../output/MonitorWindowTransaction.hpp"
 #include "../../../protocols/core/Compositor.hpp"
 #include "../../../render/decorations/CHyprBorderDecoration.hpp"
 #include "../../../render/decorations/CHyprDropShadowDecoration.hpp"
 #include "../../../render/decorations/CHyprInnerGlowDecoration.hpp"
 #include "../../../render/decorations/DecorationPositioner.hpp"
 #include "../../../render/WindowRenderPresentation.hpp"
+#include "../../../render/Renderer.hpp"
 #include "../../../render/scene/SceneSelection.hpp"
 #include "../../state/FocusState.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cmath>
-#include <ranges>
+#include <utility>
 
 using namespace Desktop;
 using namespace Desktop::View;
@@ -213,6 +215,14 @@ int CWindowPresentation::borderSize() const {
     return m_borderDecoration->borderSize();
 }
 
+int CWindowPresentation::renderBorderSize() const {
+    return m_borderDecoration->renderBorderSize();
+}
+
+double CWindowPresentation::borderExtent() const {
+    return m_borderDecoration->borderExtent();
+}
+
 void CWindowPresentation::invalidateBorderSize() {
     m_borderDecoration->invalidateBorderSize();
 }
@@ -251,7 +261,148 @@ Render::SWindowRenderPresentation CWindowPresentation::renderPresentation() cons
 }
 
 Render::SWindowRenderPresentation CWindowPresentation::renderPresentation(Render::eSceneMode mode) const {
-    return Render::resolveWindowPresentation(renderPresentationState(dynamicPointerCast<Workspace::CWorkspacePresentable>(m_window.m_workspace)), mode);
+    return Render::resolveWindowPresentation(renderPresentationState(dynamicPointerCast<Workspace::CWorkspacePresentable>(workspace())), mode);
+}
+
+PHLWORKSPACE CWindowPresentation::workspace() const {
+    return m_heldWorkspace ? m_heldWorkspace->workspace : m_window.m_workspace;
+}
+
+PHLMONITOR CWindowPresentation::monitor() const {
+    return m_heldWorkspace ? m_heldWorkspace->monitor.lock() : m_window.m_monitor.lock();
+}
+
+bool CWindowPresentation::onSpecialWorkspace() const {
+    const auto WORKSPACE = workspace();
+    return WORKSPACE && WORKSPACE->type() == Workspace::eWorkspaceType::SPECIAL;
+}
+
+bool CWindowPresentation::hasPendingState() const {
+    return m_heldWorkspace.has_value() || m_heldFullscreen.has_value();
+}
+
+void CWindowPresentation::stageWorkspace() {
+    const auto MONITOR = m_window.m_monitor.lock();
+    if (m_heldWorkspace || !m_window.canStageGeometry() || !MONITOR || !MONITOR->m_enabled || !MONITOR->m_windowTransaction)
+        return;
+
+    // Some assignment paths have already changed m_monitor, but not m_workspace.
+    const auto WORKSPACE = m_window.m_workspace;
+    holdFullscreenState();
+    m_heldWorkspace = SHeldWorkspace{
+        .workspace  = WORKSPACE,
+        .monitor    = WORKSPACE ? WORKSPACE->m_monitor : m_window.m_monitor,
+        .wasVisible = WORKSPACE && WORKSPACE->visible(),
+    };
+    MONITOR->m_windowTransaction->queue(m_window.m_self.lock(), m_window.geometricBox(IGeometric::GEOMETRIC_GOAL), true);
+}
+
+void CWindowPresentation::stageFullscreen() {
+    const auto MONITOR = m_window.m_monitor.lock();
+    if (!m_window.canStageGeometry() || !MONITOR || !MONITOR->m_enabled || !MONITOR->m_windowTransaction)
+        return;
+
+    holdFullscreenState();
+    MONITOR->m_windowTransaction->holdFullscreen(m_window.m_workspace);
+    MONITOR->m_windowTransaction->queue(m_window.m_self.lock(), m_window.geometricBox(IGeometric::GEOMETRIC_GOAL), true);
+}
+
+void CWindowPresentation::holdFullscreenState() {
+    if (m_heldFullscreen)
+        return;
+
+    const auto WINDOW = m_window.m_self.lock();
+    m_heldFullscreen  = Fullscreen::SWindowFullscreenPresentation{
+        .modes                 = Fullscreen::controller()->getPresentedFullscreenModes(WINDOW),
+        .allowedOverFullscreen = Fullscreen::controller()->isAllowedOverPresentedFullscreen(WINDOW),
+    };
+}
+
+const std::optional<Fullscreen::SWindowFullscreenPresentation>& CWindowPresentation::heldFullscreenState() const {
+    return m_heldFullscreen;
+}
+
+bool CWindowPresentation::isFadingOutUnderFullscreen() const {
+    return Fullscreen::controller()->getPresentedFullscreenWindow(workspace()) && !Fullscreen::controller()->isAllowedOverPresentedFullscreen(m_window.m_self.lock()) &&
+        alpha(WINDOW_ALPHA_FULLSCREEN)->isBeingAnimated() && alphaValue(WINDOW_ALPHA_FULLSCREEN) > 0.F;
+}
+
+bool CWindowPresentation::shouldRenderOverFullscreen() const {
+    return Fullscreen::controller()->isAllowedOverPresentedFullscreen(m_window.m_self.lock()) || !isFadingOutUnderFullscreen();
+}
+
+void CWindowPresentation::setFullscreenAlpha(float value) {
+    if (hasPendingState()) {
+        m_pendingFullscreenAlpha = value;
+        return;
+    }
+
+    applyFullscreenAlpha(value);
+}
+
+void CWindowPresentation::applyFullscreenAlpha(float value) {
+    *alpha(WINDOW_ALPHA_FULLSCREEN) = value;
+    static auto PANIMATIONS         = CConfigValue<Config::INTEGER>("animations:enabled");
+    if (m_window.m_ruleApplicator->noAnim().valueOr(!*PANIMATIONS || !alpha(WINDOW_ALPHA_FULLSCREEN)->enabled()))
+        alpha(WINDOW_ALPHA_FULLSCREEN)->warp();
+}
+
+void CWindowPresentation::applyPendingState() {
+    const auto WORKSPACE  = std::exchange(m_heldWorkspace, std::nullopt);
+    const auto FULLSCREEN = std::exchange(m_heldFullscreen, std::nullopt);
+    const auto ALPHA      = std::exchange(m_pendingFullscreenAlpha, std::nullopt);
+    if (ALPHA)
+        applyFullscreenAlpha(*ALPHA);
+    if (WORKSPACE && WORKSPACE->workspace != m_window.m_workspace)
+        animateWorkspaceMove(WORKSPACE->workspace, WORKSPACE->wasVisible);
+    if (FULLSCREEN) {
+        refreshValues();
+        static auto PANIMATIONS = CConfigValue<Config::INTEGER>("animations:enabled");
+        if (m_window.m_ruleApplicator->noAnim().valueOr(!*PANIMATIONS || !alpha(WINDOW_ALPHA_ACTIVE)->enabled()))
+            alpha(WINDOW_ALPHA_ACTIVE)->warp();
+    }
+}
+
+void CWindowPresentation::discardPendingState() {
+    if (!hasPendingState())
+        return;
+
+    const auto SELF = m_window.m_self.lock();
+    if (g_pHyprRenderer && SELF)
+        g_pHyprRenderer->damageWindow(SELF);
+    const auto WORKSPACE = std::exchange(m_heldWorkspace, std::nullopt);
+    m_heldFullscreen.reset();
+    const auto ALPHA = std::exchange(m_pendingFullscreenAlpha, std::nullopt);
+    if (ALPHA)
+        applyFullscreenAlpha(*ALPHA);
+    if (g_pHyprRenderer && SELF)
+        g_pHyprRenderer->damageWindow(SELF);
+}
+
+void CWindowPresentation::animateWorkspaceMove(PHLWORKSPACE source, bool wasVisible) {
+    if (m_heldWorkspace)
+        return;
+
+    static auto PANIMATIONS = CConfigValue<Config::INTEGER>("animations:enabled");
+    const auto  WARP        = [&](eWindowAlpha channel) {
+        if (m_window.m_ruleApplicator->noAnim().valueOr(!*PANIMATIONS || !alpha(channel)->enabled()))
+            alpha(channel)->warp();
+    };
+
+    if (wasVisible) {
+        alpha(WINDOW_ALPHA_MOVE_TO_WORKSPACE)->setValueAndWarp(1.F);
+        setMonitorMovedFrom(source ? source->monitorID() : -1);
+        *alpha(WINDOW_ALPHA_MOVE_TO_WORKSPACE) = 0.F;
+        alpha(WINDOW_ALPHA_MOVE_TO_WORKSPACE)->setCallbackOnEnd([this](auto) {
+            alpha(WINDOW_ALPHA_MOVE_TO_WORKSPACE)->setValueAndWarp(1.F);
+            resetMonitorMovedFrom();
+        });
+        WARP(WINDOW_ALPHA_MOVE_TO_WORKSPACE);
+    } else if (m_window.m_workspace && m_window.m_workspace->visible()) {
+        alpha(WINDOW_ALPHA_MOVE_FROM_WORKSPACE)->setValueAndWarp(0.F);
+        *alpha(WINDOW_ALPHA_MOVE_FROM_WORKSPACE) = 1.F;
+        WARP(WINDOW_ALPHA_MOVE_FROM_WORKSPACE);
+    }
 }
 
 Render::SWindowRenderPresentation CWindowPresentation::renderPresentation(const SP<Workspace::CWorkspacePresentable>& presentation) const {
@@ -276,20 +427,19 @@ Render::SWindowPresentationState CWindowPresentation::renderPresentationState(co
         .workspaceOffsetAnimating    = presentation && presentation->m_renderOffset->isBeingAnimated(),
         .pinned                      = !!(m_window.m_state & WINDOW_STATE_PINNED),
         .movingFromMonitor           = movingFromMonitor(),
-        .workspaceVisible            = m_window.m_workspace && m_window.m_workspace->visible(),
+        .workspaceVisible            = workspace() && workspace()->visible(),
         .alphaAnimating              = m_alpha.isBeingAnimated(),
         .floatingOffsetFromWorkspace = floatingOffsetSource() == eFloatingOffsetSource::WORKSPACE,
     };
 }
 
-float CWindowPresentation::rounding() {
-    static auto PROUNDING      = CConfigValue<Config::INTEGER>("decoration:rounding");
-    static auto PROUNDINGPOWER = CConfigValue<Config::FLOAT>("decoration:rounding_power");
+Math::SCornerRadii CWindowPresentation::rounding() {
+    static auto              PROUNDINGPOWER = CConfigValue<Config::FLOAT>("decoration:rounding_power");
 
-    float       roundingPower = m_window.m_ruleApplicator->roundingPower().valueOr(*PROUNDINGPOWER);
-    float       rounding      = m_window.m_ruleApplicator->rounding().valueOr(*PROUNDING) * (roundingPower / 2.0); /* Make perceived roundness consistent. */
+    const float              ROUNDINGPOWER = m_window.m_ruleApplicator->roundingPower().valueOr(*PROUNDINGPOWER);
+    const Math::SCornerRadii ROUNDING{m_window.m_ruleApplicator->roundingValue()};
 
-    return rounding;
+    return effectiveWindowRounding(ROUNDING, ROUNDINGPOWER, m_window.size(IGeometric::GEOMETRIC_CURRENT));
 }
 
 float CWindowPresentation::roundingPower() {
@@ -301,29 +451,9 @@ float CWindowPresentation::roundingPower() {
 // Check if the point is hidden under a rounded corner. The point is assumed to
 // be within the real window box; behavior outside it is undefined.
 bool CWindowPresentation::isInCurvedCorner(double x, double y) {
-    const int ROUNDING      = rounding();
-    const int ROUNDINGPOWER = roundingPower();
-    if (borderSize() >= ROUNDING)
-        return false;
-
-    // (x0, y0), (x0, y1), ... are the center point of rounding at each corner
     const auto POSITION = m_window.position(IGeometric::GEOMETRIC_CURRENT);
     const auto SIZE     = m_window.size(IGeometric::GEOMETRIC_CURRENT);
-    double     x0       = POSITION.x + ROUNDING;
-    double     y0       = POSITION.y + ROUNDING;
-    double     x1       = POSITION.x + SIZE.x - ROUNDING;
-    double     y1       = POSITION.y + SIZE.y - ROUNDING;
-
-    if (x < x0 && y < y0)
-        return std::pow(x0 - x, ROUNDINGPOWER) + std::pow(y0 - y, ROUNDINGPOWER) > std::pow(sc<double>(ROUNDING), ROUNDINGPOWER);
-    if (x > x1 && y < y0)
-        return std::pow(x - x1, ROUNDINGPOWER) + std::pow(y0 - y, ROUNDINGPOWER) > std::pow(sc<double>(ROUNDING), ROUNDINGPOWER);
-    if (x < x0 && y > y1)
-        return std::pow(x0 - x, ROUNDINGPOWER) + std::pow(y - y1, ROUNDINGPOWER) > std::pow(sc<double>(ROUNDING), ROUNDINGPOWER);
-    if (x > x1 && y > y1)
-        return std::pow(x - x1, ROUNDINGPOWER) + std::pow(y - y1, ROUNDINGPOWER) > std::pow(sc<double>(ROUNDING), ROUNDINGPOWER);
-
-    return false;
+    return isInWindowCorner(Vector2D{x, y} - POSITION, SIZE, rounding(), roundingPower(), borderSize());
 }
 
 bool CWindowPresentation::visibleOnMonitor(PHLMONITOR monitor) {
@@ -421,16 +551,16 @@ void CWindowPresentation::setAnimationsToMove() {
 }
 
 void CWindowPresentation::onWorkspaceAnimUpdate() {
-    if (!m_window.isFloating() || (m_window.m_state & WINDOW_STATE_PINNED) || Fullscreen::controller()->isFullscreen(m_window.m_self.lock())) {
+    if (!m_window.isFloating() || (m_window.m_state & WINDOW_STATE_PINNED) || Fullscreen::controller()->isPresentedFullscreen(m_window.m_self.lock())) {
         clearFloatingOffset();
         return;
     }
 
-    const auto WORKSPACE = m_window.m_workspace;
+    const auto WORKSPACE = workspace();
     if (!WORKSPACE)
         return;
 
-    const auto MONITOR = m_window.m_monitor.lock();
+    const auto MONITOR = monitor();
     if (!MONITOR)
         return;
 
@@ -469,12 +599,12 @@ void CWindowPresentation::refreshValues() {
     static auto PACTIVEALPHA     = CConfigValue<Config::FLOAT>("decoration:active_opacity");
     static auto PFULLSCREENALPHA = CConfigValue<Config::FLOAT>("decoration:fullscreen_opacity");
     static auto PDIMSTRENGTH     = CConfigValue<Config::FLOAT>("decoration:dim_strength");
-    static auto PDIMENABLED      = CConfigValue<Config::INTEGER>("decoration:dim_inactive");
-    static auto PDIMMODAL        = CConfigValue<Config::INTEGER>("decoration:dim_modal");
+    static auto PDIMENABLED      = CConfigValue<Config::BOOL>("decoration:dim_inactive");
+    static auto PDIMMODAL        = CConfigValue<Config::BOOL>("decoration:dim_modal");
 
     const bool  IS_SHADOWED_BY_MODAL = m_window.backend().traits().hasModalChild;
 
-    if (Fullscreen::controller()->getFullscreenModes(m_window.m_self.lock()).internal == Fullscreen::FSMODE_FULLSCREEN)
+    if (Fullscreen::controller()->isPresentedFullscreen(m_window.m_self.lock(), Fullscreen::FSMODE_FULLSCREEN))
         *alpha(WINDOW_ALPHA_ACTIVE) = m_window.m_ruleApplicator->alphaFullscreen().valueOrDefault().applyAlpha(*PFULLSCREENALPHA);
     else if (m_window.m_self == Desktop::focusState()->window())
         *alpha(WINDOW_ALPHA_ACTIVE) = m_window.m_ruleApplicator->alpha().valueOrDefault().applyAlpha(*PACTIVEALPHA);

@@ -85,7 +85,7 @@ void CFocusState::fullWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWL
         }
     }
 
-    static auto PMODALPARENTBLOCKING = CConfigValue<Config::INTEGER>("general:modal_parent_blocking");
+    static auto PMODALPARENTBLOCKING = CConfigValue<Config::BOOL>("general:modal_parent_blocking");
 
     if (*PMODALPARENTBLOCKING && pWindow && !pWindow->backend().isX11() && pWindow->backend().traits().hasModalChild) {
         LOG(Log::DEBUG, "Refusing focus to window shadowed by modal dialog");
@@ -97,7 +97,7 @@ void CFocusState::fullWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWL
 
 void CFocusState::rawWindowFocus(PHLWINDOW pWindow, eFocusReason reason, SP<CWLSurfaceResource> surface) {
     static auto PFOLLOWMOUSE        = CConfigValue<Config::INTEGER>("input:follow_mouse");
-    static auto PSPECIALFALLTHROUGH = CConfigValue<Config::INTEGER>("input:special_fallthrough");
+    static auto PSPECIALFALLTHROUGH = CConfigValue<Config::BOOL>("input:special_fallthrough");
 
     if (pWindow == m_focusWindow && surface == m_focusSurface && m_focusSurface)
         return;
@@ -323,6 +323,9 @@ bool CFocusState::isWindowActive(PHLWINDOW pWindow) const {
 }
 
 bool Desktop::isHardInputFocusReason(eFocusReason r) {
-    return r == FOCUS_REASON_NEW_WINDOW || r == FOCUS_REASON_KEYBIND || r == FOCUS_REASON_GHOSTS || r == FOCUS_REASON_CLICK_UP || r == FOCUS_REASON_DESKTOP_STATE_CHANGE ||
-        r == FOCUS_REASON_UNMAP_WINDOW_TILING || r == FOCUS_REASON_SWITCH_TO_WINDOW_HARD;
+
+    static const auto PFOLLOW_FOCUS = CConfigValue<Config::INTEGER>("scrolling:follow_focus");
+
+    return r == FOCUS_REASON_NEW_WINDOW || r == FOCUS_REASON_KEYBIND || r == FOCUS_REASON_GHOSTS || ((*PFOLLOW_FOCUS == 1) ? (r == FOCUS_REASON_CLICK_UP) : false) ||
+        r == FOCUS_REASON_DESKTOP_STATE_CHANGE || r == FOCUS_REASON_UNMAP_WINDOW_TILING || r == FOCUS_REASON_SWITCH_TO_WINDOW_HARD;
 }

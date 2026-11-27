@@ -1,3 +1,5 @@
+#include "../../../../Compositor.hpp"
+
 #include "../../../../config/shared/monitor/MonitorRuleManager.hpp"
 #include "../../../../render/Renderer.hpp"
 
@@ -29,6 +31,10 @@ CScrollingFullscreenHandler::CScrollingFullscreenHandler(Layout::Tiled::CScrolli
 }
 
 CScrollingFullscreenHandler::~CScrollingFullscreenHandler() {
+
+    // No need for extra cleanup of FS lists when compositor is shutting down anyway
+    if (g_pCompositor->m_isShuttingDown)
+        return;
 
     // sift through any expired entries in case the following loop fucks us - read CScrollingFullscreenHandler::removeFsTarget()
     std::erase_if(m_fsTargets, [&](const auto& it) { return !it.first; });
@@ -458,7 +464,7 @@ void CScrollingFullscreenHandler::syncFullscreenTargets() {
 
     const auto                    removeFsTargetAndreturnNextIter = [&](auto& it, const auto& TARGET) {
         const auto NEXT = std::next(it);
-        removeFsTarget(TARGET, true);
+        removeFsTarget(TARGET);
         return NEXT;
     };
 
@@ -476,30 +482,36 @@ void CScrollingFullscreenHandler::syncFullscreenTargets() {
         }
 
         const auto TARGET_FS_MODES = getFullscreenModes(TARGET);
+        const auto TDATA           = m_scrollingAlgorithm->dataFor(TARGET, true);
 
-        if (!isFullscreen(TARGET, std::nullopt, std::nullopt) && TARGET_FS_MODES.client == FSMODE_NONE) {
-            it = removeFsTargetAndreturnNextIter(it, TARGET);
-            continue;
+        if (!isFullscreen(TARGET, std::nullopt, std::nullopt)) {
+            if (TARGET_FS_MODES.client == FSMODE_NONE) {
+                it = removeFsTargetAndreturnNextIter(it, TARGET);
+                continue;
+            }
+            // If target is no longer intenal FS but still client FS, restore its column width
+            if (it->second.restoreColumnWidth.has_value()) {
+                TDATA->column->setColumnWidth(it->second.restoreColumnWidth.value());
+                it->second.restoreColumnWidth = std::nullopt;
+                continue;
+            }
         }
 
         // This might happen if the target was moved to another col, so we need to unFS it properly
-        if (const auto TARGET_WINDOW = TARGET->window(); TARGET_WINDOW && m_scrollingAlgorithm->dataFor(TARGET, true)->column) {
-            const auto STDATA = m_scrollingAlgorithm->dataFor(TARGET, true);
-            if (STDATA) {
-                const auto COL_DATA = m_scrollingAlgorithm->dataFor(TARGET, true)->column;
-                // use TARGET_FS_MODES.internal != FSMODE_NONE here because isFullscreen() would catch that target isn't alone in col and return false
-                if (COL_DATA && TARGET_FS_MODES.internal != FSMODE_NONE && COL_DATA->targetDatas.size() != 1) {
-                    // Empty the list now so the unFS operation has an updated tracked FS target list it can check
-                    for (const auto& e : toInsert) {
-                        m_fsTargets.emplace(e.first, e.second);
-                    }
-                    toInsert.clear();
-                    controller()->setFullscreenMode(TARGET_WINDOW, FSMODE_NONE, std::nullopt, true);
-                    if (getFullscreenModes(TARGET).internal != FSMODE_NONE)
-                        removeFsTarget(TARGET, true);
-                    it = m_fsTargets.begin();
-                    continue;
+        if (const auto TARGET_WINDOW = TARGET->window(); TARGET_WINDOW && TDATA->column) {
+            const auto COL_DATA = m_scrollingAlgorithm->dataFor(TARGET, true)->column;
+            // use TARGET_FS_MODES.internal != FSMODE_NONE here because isFullscreen() would catch that target isn't alone in col and return false
+            if (COL_DATA && TARGET_FS_MODES.internal != FSMODE_NONE && COL_DATA->targetDatas.size() != 1) {
+                // Empty the list now so the unFS operation has an updated tracked FS target list it can check
+                for (const auto& e : toInsert) {
+                    m_fsTargets.emplace(e.first, e.second);
                 }
+                toInsert.clear();
+                controller()->setFullscreenMode(TARGET_WINDOW, FSMODE_NONE, std::nullopt, true);
+                if (getFullscreenModes(TARGET).internal != FSMODE_NONE)
+                    removeFsTarget(TARGET);
+                it = m_fsTargets.begin();
+                continue;
             }
         }
 
@@ -538,7 +550,7 @@ void CScrollingFullscreenHandler::syncFullscreenTargets() {
     }
 }
 
-void CScrollingFullscreenHandler::removeFsTarget(SP<Layout::ITarget> target, const bool recursionGuard) {
+void CScrollingFullscreenHandler::removeFsTarget(SP<Layout::ITarget> target) {
 
     // This should not be done because if there are 2 expired elements in the list, this will remove one of them with little guarantee as to which and the caller is preumsably looking forward and getting the next
     // iterator in the list; which would corrupt the map if that next iter is also nullptr. We let this go through on the offchance that there is Ǝ! expired entries or the erase hits the right expired target but it is
@@ -567,9 +579,6 @@ void CScrollingFullscreenHandler::removeFsTarget(SP<Layout::ITarget> target, con
     if (target->window())
         target->window()->windowTarget()->setCantLockCursor(false);
     m_fsTargets.erase(ITR);
-
-    if (!recursionGuard)
-        syncFullscreenTargets();
 }
 
 eFullscreenHandler CScrollingFullscreenHandler::getFullscreenHandlerName() const {
@@ -750,7 +759,7 @@ bool CScrollingFullscreenHandler::columnCoversMonitor(SP<Layout::Tiled::SColumnD
     if (COL_IDX < 0)
         return false;
 
-    static const auto PFSONONE = CConfigValue<Config::INTEGER>("scrolling:fullscreen_on_one_column");
+    static const auto PFSONONE = CConfigValue<Config::BOOL>("scrolling:fullscreen_on_one_column");
 
     const auto        USABLE        = m_scrollingAlgorithm->usableArea();
     const bool        PRIMARY_HORIZ = SCROLLINGDATA->controller->isPrimaryHorizontal();

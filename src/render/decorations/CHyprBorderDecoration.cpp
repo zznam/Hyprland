@@ -1,4 +1,5 @@
 #include "CHyprBorderDecoration.hpp"
+#include "BorderGeometry.hpp"
 #include "../../desktop/view/window/WindowGroupMembership.hpp"
 #include "../../desktop/view/window/WindowPresentation.hpp"
 #include "../../Compositor.hpp"
@@ -6,6 +7,7 @@
 #include "../../desktop/state/FocusState.hpp"
 #include "../../desktop/state/WindowState.hpp"
 #include "../../desktop/view/Group.hpp"
+#include "../../layout/target/Target.hpp"
 #include "../../managers/eventLoop/EventLoopManager.hpp"
 #include "../../managers/fullscreen/FullscreenController.hpp"
 #include "../pass/BorderPassElement.hpp"
@@ -13,17 +15,16 @@
 #include "../WindowRenderPresentation.hpp"
 #include "../../state/MonitorState.hpp"
 
+#include <hyprutils/utils/ScopeGuard.hpp>
+
 CHyprBorderDecoration::CHyprBorderDecoration(PHLWINDOW pWindow) :
     IHyprWindowDecoration(pWindow), m_window(pWindow), m_gradient(Config::CGradientValueData{CHyprColor(sc<uint64_t>(0))}) {
     ;
 }
 
 SDecorationPositioningInfo CHyprBorderDecoration::getPositioningInfo() {
-    const auto BORDERSIZE = borderSize();
+    const auto BORDERSIZE = borderExtent();
     m_extents             = {{BORDERSIZE, BORDERSIZE}, {BORDERSIZE, BORDERSIZE}};
-
-    if (doesntWantBorders())
-        m_extents = {{}, {}};
 
     SDecorationPositioningInfo info;
     info.priority       = 10000;
@@ -41,7 +42,8 @@ void CHyprBorderDecoration::onPositioningReply(const SDecorationPositioningReply
 }
 
 CBox CHyprBorderDecoration::assignedBoxGlobal() {
-    return assignedBoxGlobal(m_window->presentation().renderPresentation());
+    const auto PRESENTATION = m_window->presentation().renderPresentation();
+    return assignedBoxGlobal(PRESENTATION).translate(PRESENTATION.floatingOffset);
 }
 
 CBox CHyprBorderDecoration::assignedBoxGlobal(const Render::SWindowRenderPresentation& presentation) {
@@ -52,24 +54,24 @@ CBox CHyprBorderDecoration::assignedBoxGlobal(const Render::SWindowRenderPresent
 }
 
 void CHyprBorderDecoration::draw(Render::CRenderContext& ctx, PHLMONITOR pMonitor, float const& a, const Render::SWindowRenderPresentation& presentation) {
-    if (doesntWantBorders())
+    const auto borderSize = renderBorderSize();
+    if (borderSize == 0)
         return;
 
     if (m_assignedGeometry.width < m_extents.topLeft.x + 1 || m_assignedGeometry.height < m_extents.topLeft.y + 1)
         return;
 
-    CBox windowBox = assignedBoxGlobal(presentation).translate(-pMonitor->m_position + presentation.floatingOffset).expand(-borderSize()).scale(pMonitor->m_scale).round();
+    CBox windowBox = assignedBoxGlobal(presentation).translate(-pMonitor->m_position + presentation.floatingOffset).expand(-m_extents.topLeft.x).scale(pMonitor->m_scale).round();
 
     if (windowBox.width < 1 || windowBox.height < 1)
         return;
 
     const auto                      GRADIENT         = m_gradient.renderState();
-    int                             borderSize       = this->borderSize();
-    const auto                      ROUNDINGBASE     = m_window->presentation().rounding();
+    const auto                      ROUNDINGBASE     = Math::SCornerRadii{m_window->presentation().rounding()};
     const auto                      ROUNDING         = ROUNDINGBASE * pMonitor->m_scale;
     const auto                      ROUNDINGPOWER    = m_window->presentation().roundingPower();
     const auto                      CORRECTIONOFFSET = (borderSize * (M_SQRT2 - 1) * std::max(2.0 - ROUNDINGPOWER, 0.0));
-    const auto                      OUTERROUND       = ((ROUNDINGBASE + borderSize) - CORRECTIONOFFSET) * pMonitor->m_scale;
+    const auto                      OUTERROUND       = ROUNDINGBASE.expanded(borderSize - CORRECTIONOFFSET) * pMonitor->m_scale;
 
     CBorderPassElement::SBorderData data;
     data.box           = windowBox;
@@ -96,29 +98,40 @@ eDecorationType CHyprBorderDecoration::getDecorationType() {
 }
 
 void CHyprBorderDecoration::updateWindow(PHLWINDOW) {
-    auto borderSize = this->borderSize();
+    const auto EXTENT       = borderExtent();
+    const auto SIZE         = borderSize();
+    const bool SIZE_CHANGED = SIZE != m_lastBorderSize;
+    m_lastBorderSize        = SIZE;
 
-    if (borderSize == m_lastBorderSize)
+    if (EXTENT == m_lastBorderExtent) {
+        // Two logical border sizes can render to the same width, but imply different negative gaps.
+        if (SIZE_CHANGED && EXTENT > 0 && !m_window->layoutTarget()->floating()) {
+            // Recompute the existing allocation even for a covering scrolling-maximized window.
+            const auto                          WAS_QUEUED = Fullscreen::controller()->m_windowPosSettingQueued;
+            const Hyprutils::Utils::CScopeGuard RESTORE([WAS_QUEUED] { Fullscreen::controller()->m_windowPosSettingQueued = WAS_QUEUED; });
+            Fullscreen::controller()->m_windowPosSettingQueued = true;
+            m_window->layoutTarget()->recalc();
+        }
         return;
+    }
 
-    if (borderSize <= 0 && m_lastBorderSize <= 0)
-        return;
-
-    m_lastBorderSize = borderSize;
+    m_lastBorderExtent = EXTENT;
 
     g_pDecorationPositioner->repositionDeco(this);
 }
 
 void CHyprBorderDecoration::damageEntire() {
-    if (!validMapped(m_window) || Fullscreen::controller()->getFullscreenModes(m_window.lock()).internal == Fullscreen::FSMODE_FULLSCREEN)
+    if (!validMapped(m_window) || Fullscreen::controller()->isPresentedFullscreen(m_window.lock(), Fullscreen::FSMODE_FULLSCREEN))
         return;
 
-    const auto GLOBAL_BOX = assignedBoxGlobal();
+    const auto PMONITOR   = m_window->presentation().monitor();
+    const auto EXTENT     = Render::borderExtentInLogical(renderBorderSize(), PMONITOR ? PMONITOR->m_scale : 1.F);
+    const auto GLOBAL_BOX = assignedBoxGlobal().expand(EXTENT - m_extents.topLeft.x);
     if (GLOBAL_BOX.w <= 0 || GLOBAL_BOX.h <= 0)
         return;
 
-    const auto ROUNDING   = m_window->presentation().rounding();
-    const auto BORDERSIZE = borderSize() + 1;
+    const auto ROUNDING   = Math::SCornerRadii{m_window->presentation().rounding()}.max();
+    const auto BORDERSIZE = EXTENT + 1;
 
     CRegion    borderRegion(GLOBAL_BOX);
     borderRegion.subtract(GLOBAL_BOX.copy().expand(-(BORDERSIZE + ROUNDING)));
@@ -145,7 +158,7 @@ eDecorationLayer CHyprBorderDecoration::getDecorationLayer() {
 }
 
 uint64_t CHyprBorderDecoration::getDecorationFlags() {
-    static auto PPARTOFWINDOW = CConfigValue<Config::INTEGER>("decoration:border_part_of_window");
+    static auto PPARTOFWINDOW = CConfigValue<Config::BOOL>("decoration:border_part_of_window");
 
     return *PPARTOFWINDOW && !doesntWantBorders() ? DECORATION_PART_OF_MAIN_WINDOW : 0;
 }
@@ -230,6 +243,24 @@ void CHyprBorderDecoration::invalidateBorderSize() {
     m_borderSizeCacheDirty = true;
 }
 
-bool CHyprBorderDecoration::doesntWantBorders() {
+int CHyprBorderDecoration::renderBorderSize() const {
+    const auto PWINDOW = m_window.lock();
+    if (!PWINDOW || PWINDOW->backend().traits().suggestsNoBorder || !PWINDOW->m_ruleApplicator->decorate().valueOrDefault() ||
+        (PWINDOW->presentation().workspace() && Fullscreen::controller()->isPresentedFullscreen(PWINDOW, Fullscreen::FSMODE_FULLSCREEN)))
+        return 0;
+
+    static auto PBORDERSIZE = CConfigValue<Config::INTEGER>("general:border_size");
+    return PWINDOW->m_ruleApplicator->borderSize().valueOr(*PBORDERSIZE);
+}
+
+double CHyprBorderDecoration::borderExtent() const {
+    if (doesntWantBorders())
+        return 0;
+
+    const auto PMONITOR = m_window->m_monitor.lock();
+    return Render::borderExtentInLogical(borderSize(), PMONITOR ? PMONITOR->m_scale : 1.F);
+}
+
+bool CHyprBorderDecoration::doesntWantBorders() const {
     return m_window->backend().traits().suggestsNoBorder || borderSize() == 0 || !m_window->m_ruleApplicator->decorate().valueOrDefault();
 }

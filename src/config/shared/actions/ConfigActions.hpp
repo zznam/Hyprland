@@ -72,8 +72,8 @@ namespace Config::Actions {
     ActionResult changeGroupActive(bool forward = true, std::optional<PHLWINDOW> window = std::nullopt /* Active */);
     ActionResult setGroupActive(int index, std::optional<PHLWINDOW> window = std::nullopt /* Active */);
 
-    ActionResult changeWorkspace(PHLWORKSPACE ws);
-    ActionResult changeWorkspace(const std::string& ws);
+    ActionResult changeWorkspace(PHLWORKSPACE ws, bool noFocus = false);
+    ActionResult changeWorkspace(const std::string& ws, bool noFocus = false);
     ActionResult renameWorkspace(PHLWORKSPACE ws, const std::string& s);
     ActionResult changeWorkspaceID(PHLWORKSPACE ws, int64_t id);
     ActionResult moveToMonitor(PHLWORKSPACE ws, PHLMONITOR mon);
@@ -94,7 +94,7 @@ namespace Config::Actions {
     ActionResult setSubmap(const std::string& submap);
     ActionResult dpms(eTogglableAction action, std::optional<PHLMONITOR> mon);
     ActionResult forceIdle(float seconds);
-    ActionResult global(const std::string& action);
+    ActionResult global(const std::string& action, const std::optional<bool> event = std::nullopt);
     ActionResult event(const std::string& data);
 
     ActionResult mouse(const std::string& action);

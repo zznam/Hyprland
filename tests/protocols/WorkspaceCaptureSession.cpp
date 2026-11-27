@@ -184,6 +184,14 @@ class CSessionTestElements : public Render::IElementRenderer {
         CBox                   box;
     };
     std::vector<STexture> m_textures;
+    struct SRectangle {
+        CBox               box;
+        CHyprColor         color;
+        Math::SCornerRadii round;
+        CRegion            damage;
+    };
+    bool                    m_recordRectangles = false;
+    std::vector<SRectangle> m_rectangles;
 
   protected:
     void draw(Render::CRenderContext& ctx, WP<CClearPassElement> element, const CRegion& damage) override {
@@ -200,8 +208,12 @@ class CSessionTestElements : public Render::IElementRenderer {
     void draw(Render::CRenderContext&, WP<CPreBlurElement>, const CRegion&) override {
         ADD_FAILURE() << "Unexpected blur draw";
     }
-    void draw(Render::CRenderContext&, WP<CRectPassElement>, const CRegion&) override {
-        ADD_FAILURE() << "Unexpected rectangle draw";
+    void draw(Render::CRenderContext&, WP<CRectPassElement> element, const CRegion& damage) override {
+        if (!m_recordRectangles) {
+            ADD_FAILURE() << "Unexpected rectangle draw";
+            return;
+        }
+        m_rectangles.push_back({element->m_data.box, element->m_data.color, element->m_data.round, damage});
     }
     void draw(Render::CRenderContext&, WP<CShadowPassElement>, const CRegion&) override {
         ADD_FAILURE() << "Unexpected shadow draw";
@@ -290,7 +302,7 @@ class CSessionTestRenderer : public Render::IHyprRenderer {
     SP<Render::ITexture> createTexture(uint32_t, uint8_t*, uint32_t, const Vector2D&, bool, bool) override {
         return nullptr;
     }
-    SP<Render::ITexture> createTexture(const Aquamarine::SDMABUFAttrs&, bool) override {
+    SP<Render::ITexture> createTexture(const Aquamarine::SDMABUFAttrs&, bool, const NColorManagement::SColorRepresentation&) override {
         return nullptr;
     }
     SP<Render::ITexture> createTexture(int, int, unsigned char*) override {
@@ -323,17 +335,19 @@ class CSessionTestRenderer : public Render::IHyprRenderer {
     void blend(bool) override {
         ;
     }
-    void drawShadow(Render::CRenderContext&, const CBox&, int, float, int, const Config::CGradientValueData&, float, const Render::SWindowRenderPresentation&) override {
-        ;
-    }
-    void drawShadow(Render::CRenderContext&, const CBox&, int, float, int, const Config::CGradientValueData&, const Config::CGradientValueData&, float, float,
+    void drawShadow(Render::CRenderContext&, const CBox&, Math::SCornerRadii, float, int, const Config::CGradientValueData&, float,
                     const Render::SWindowRenderPresentation&) override {
         ;
     }
-    void drawGlow(Render::CRenderContext&, const CBox&, int, float, int, const Config::CGradientValueData&, float) override {
+    void drawShadow(Render::CRenderContext&, const CBox&, Math::SCornerRadii, float, int, const Config::CGradientValueData&, const Config::CGradientValueData&, float, float,
+                    const Render::SWindowRenderPresentation&) override {
         ;
     }
-    void drawGlow(Render::CRenderContext&, const CBox&, int, float, int, const Config::CGradientValueData&, const Config::CGradientValueData&, float, float) override {
+    void drawGlow(Render::CRenderContext&, const CBox&, Math::SCornerRadii, float, int, const Config::CGradientValueData&, float) override {
+        ;
+    }
+    void drawGlow(Render::CRenderContext&, const CBox&, Math::SCornerRadii, float, int, const Config::CGradientValueData&, const Config::CGradientValueData&, float,
+                  float) override {
         ;
     }
     void setViewport(int, int, int, int) override {
@@ -712,13 +726,13 @@ class CWorkspaceCaptureFrameTest : public CWorkspaceCaptureSessionTest {
         g_pSessionLockManager       = makeUnique<CSessionLockManager>();
         Desktop::fadingOutState()   = makeUnique<Desktop::CFadingOutState>();
 
-        *CConfigValue<Config::INTEGER>("ecosystem:enforce_permissions").ptr() = 0;
-        *CConfigValue<Config::INTEGER>("misc:disable_hyprland_logo").ptr()    = 1;
-        *CConfigValue<Config::INTEGER>("misc:disable_splash_rendering").ptr() = 1;
-        *CConfigValue<Config::INTEGER>("misc:background_color").ptr()         = 0;
-        *CConfigValue<Config::INTEGER>("render:xp_mode").ptr()                = 0;
-        *CConfigValue<Config::INTEGER>("debug:pass").ptr()                    = 0;
-        *CConfigValue<Config::BOOL>("decoration:blur:enabled").ptr()          = false;
+        *CConfigValue<Config::BOOL>("ecosystem:enforce_permissions").ptr() = false;
+        *CConfigValue<Config::BOOL>("misc:disable_hyprland_logo").ptr()    = true;
+        *CConfigValue<Config::BOOL>("misc:disable_splash_rendering").ptr() = true;
+        *CConfigValue<Config::INTEGER>("misc:background_color").ptr()      = 0;
+        *CConfigValue<Config::BOOL>("render:xp_mode").ptr()                = false;
+        *CConfigValue<Config::BOOL>("debug:pass").ptr()                    = false;
+        *CConfigValue<Config::BOOL>("decoration:blur:enabled").ptr()       = false;
         m_monitor->m_output->state->setFormat(DRM_FORMAT_XRGB8888);
 
         std::array<int, 2> sockets = {-1, -1};
@@ -1181,11 +1195,11 @@ TEST_F(CWorkspaceCaptureSceneTest, LayerPopupFadeoutKeepsInitialDenialAndSuppres
     auto           owner     = layer(ZWLR_LAYER_SHELL_V1_LAYER_TOP);
     const PHLLSREF weakOwner = owner;
     owner->m_ruleApplicator->noScreenShare().set(true, Desktop::Types::PRIORITY_SET_PROP);
-    *CConfigValue<Config::BOOL>("decoration:blur:enabled").ptr()   = true;
-    *CConfigValue<Config::INTEGER>("decoration:blur:popups").ptr() = 1;
-    auto popup                                                     = Desktop::View::CPopup::create(owner);
-    auto snapshot                                                  = popupSnapshot();
-    auto fadeout                                                   = Desktop::CPopupFadeout::create(popup, snapshot, 1.F);
+    *CConfigValue<Config::BOOL>("decoration:blur:enabled").ptr() = true;
+    *CConfigValue<Config::BOOL>("decoration:blur:popups").ptr()  = true;
+    auto popup                                                   = Desktop::View::CPopup::create(owner);
+    auto snapshot                                                = popupSnapshot();
+    auto fadeout                                                 = Desktop::CPopupFadeout::create(popup, snapshot, 1.F);
     ASSERT_TRUE(fadeout);
     ASSERT_TRUE(fadeout->effects().textureBlur.enabled);
     // Snapshot effects are frozen; disabling live blur must not remove this check.
@@ -1332,8 +1346,8 @@ TEST_F(CWorkspaceCaptureSceneTest, RemovedSourceClearsResizedScratchAndPreserves
 }
 
 TEST_F(CWorkspaceCaptureSceneTest, PendingPermissionDefersSceneAndDeniedPermissionNeverRenders) {
-    auto shell                                                            = layer(ZWLR_LAYER_SHELL_V1_LAYER_TOP);
-    *CConfigValue<Config::INTEGER>("ecosystem:enforce_permissions").ptr() = 1;
+    auto shell                                                         = layer(ZWLR_LAYER_SHELL_V1_LAYER_TOP);
+    *CConfigValue<Config::BOOL>("ecosystem:enforce_permissions").ptr() = true;
     for (const bool dma : {false, true}) {
         g_pDynamicPermissionManager->clearConfigPermissions();
         g_pDynamicPermissionManager->addConfigPermissionRule(".*", PERMISSION_TYPE_SCREENCOPY, PERMISSION_RULE_ALLOW_MODE_PENDING);
@@ -1452,6 +1466,67 @@ struct SSnapshotTestMappedAccess {
 };
 
 template struct SSnapshotTestMappedAccess<&Desktop::View::CWindow::m_isMapped>;
+
+// Enter the real monitor masking path with a metadata-only mirror framebuffer,
+// without importing a buffer or starting the output-copy lifecycle.
+static void renderSessionTestMonitor(Screenshare::CScreenshareFrame& frame, Render::CRenderContext& ctx, SP<Render::IFramebuffer> mirror);
+
+template <auto RenderMonitor, auto MirrorFramebuffer>
+struct SSessionTestMonitorRenderAccess {
+    friend void renderSessionTestMonitor(Screenshare::CScreenshareFrame& frame, Render::CRenderContext& ctx, SP<Render::IFramebuffer> mirror) {
+        ctx.m_data.pMonitor->resources().get()->*MirrorFramebuffer = mirror;
+        (frame.*RenderMonitor)(ctx);
+    }
+};
+
+template struct SSessionTestMonitorRenderAccess<&Screenshare::CScreenshareFrame::renderMonitor, &Monitor::CMonitorResources::m_monitorMirrorFB>;
+
+TEST_F(CWorkspaceCaptureSceneTest, FractionalMonitorPrivacyMaskCoversEveryRenderedPixelInRegionCapture) {
+    m_monitor->m_scale     = 1.5F;
+    m_monitor->m_position  = {1920, 120};
+    m_monitor->m_pixelSize = m_monitor->m_transformedSize = {3840, 2160};
+    m_monitor->m_size                                     = m_monitor->m_pixelSize / m_monitor->m_scale;
+    m_monitor->m_transform                                = WL_OUTPUT_TRANSFORM_NORMAL;
+    m_workspace->m_forceRendering                         = true;
+
+    auto                      window = Desktop::View::CWindow::create(makeUnique<Desktop::View::CWaylandBackend>(nullptr));
+    const Render::CScopeGuard removeWindow([&] { Desktop::windowState()->removeSafe(window); });
+    window->m_workspace        = m_workspace;
+    window->m_monitor          = m_monitor;
+    snapshotTestMapped(window) = true;
+    window->positionAnimation()->setValueAndWarp(m_monitor->m_position + Vector2D{2.0 / 1.5, 2.0 / 1.5});
+    window->sizeAnimation()->setValueAndWarp({3836.0 / 1.5, 2156.0 / 1.5});
+    window->m_ruleApplicator->noScreenShare().set(true, Desktop::Types::PRIORITY_SET_PROP);
+
+    auto session = Screenshare::mgr()->newSession(m_client, m_monitor, CBox{1.0 / 1.5, 1.0 / 1.5, 3838.0 / 1.5, 2158.0 / 1.5});
+    ASSERT_TRUE(session);
+    auto frame = session->nextFrame(false);
+    ASSERT_FALSE(frame->done());
+    auto mirror = popupSnapshot();
+    ASSERT_TRUE(mirror->getTexture());
+
+    Render::CRenderContext ctx;
+    ASSERT_TRUE(ctx.begin(makeShared<Render::CSceneResources>(SP<Render::IFramebuffer>{})));
+    ctx.m_data.pMonitor                       = m_monitor;
+    ctx.m_data.currentFB                      = mirror;
+    ctx.m_data.blockScreenShader              = true;
+    ctx.m_renderingCapture                    = true;
+    ctx.m_blockSurfaceFeedback                = true;
+    renderer().m_elements->m_recordRectangles = true;
+    renderSessionTestMonitor(*frame, ctx, mirror);
+
+    ASSERT_EQ(renderer().m_elements->m_rectangles.size(), 1U);
+    const auto& mask = renderer().m_elements->m_rectangles.front();
+    // The surface renders at integer pixel edges; the capture starts one pixel
+    // before it. In particular, 3836 / 1.5 * 1.5 must not lose the last column
+    // when the mask's damage is converted to an integer scissor region.
+    const CBox renderedBox{1, 1, 3836, 2156};
+    EXPECT_EQ(mask.box, renderedBox);
+    EXPECT_EQ(mask.color, Colors::BLACK);
+    EXPECT_EQ(mask.round, 0);
+    EXPECT_TRUE(CRegion{renderedBox}.subtract(mask.damage).empty());
+    EXPECT_TRUE(mask.damage.copy().subtract(CRegion{renderedBox}).empty());
+}
 
 static PHLWINDOW makeSnapshotTestWindow(PHLWORKSPACE workspace) {
     auto window = Desktop::View::CWindow::create(makeUnique<Desktop::View::CWaylandBackend>(nullptr));
@@ -1645,7 +1720,7 @@ TEST_F(CWorkspaceCaptureFrameTest, SnapshotDemandRejectsPendingAndDeniedPermissi
     ASSERT_TRUE(session);
     auto frame = session->nextFrame(false);
     ASSERT_EQ(frame->share(buffer(session->bufferSize()), {}, [](auto) { ; }), Screenshare::ERROR_NONE);
-    *CConfigValue<Config::INTEGER>("ecosystem:enforce_permissions").ptr() = 1;
+    *CConfigValue<Config::BOOL>("ecosystem:enforce_permissions").ptr() = true;
 
     for (const auto mode : {PERMISSION_RULE_ALLOW_MODE_PENDING, PERMISSION_RULE_ALLOW_MODE_DENY, PERMISSION_RULE_ALLOW_MODE_ALLOW}) {
         SCOPED_TRACE(mode);

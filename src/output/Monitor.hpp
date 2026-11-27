@@ -41,6 +41,7 @@ namespace Monitor {
     class CMonitorResources;
     class CMonitorFrameScheduler;
     class COutputCommitCoordinator;
+    class CMonitorWindowTransaction;
     class CMonitor;
 
     class CMonitorState {
@@ -138,6 +139,7 @@ namespace Monitor {
 
         UP<CMonitorFrameScheduler>     m_frameScheduler;
         UP<COutputCommitCoordinator>   m_commitCoordinator;
+        UP<CMonitorWindowTransaction>  m_windowTransaction;
 
         // mirroring
         PHLMONITORREF              m_mirrorOf;
@@ -214,7 +216,7 @@ namespace Monitor {
             DS_BLOCK_FAILED    = (1 << 11),
             DS_BLOCK_CM        = (1 << 12),
 
-            DS_CHECKS_COUNT = 14,
+            DS_CHECKS_COUNT = 13,
         };
 
         // keep in sync with socket1 output
@@ -341,9 +343,11 @@ namespace Monitor {
         bool                                                        gammaRampsInUse();
 
         std::optional<NColorManagement::PImageDescription>          getFSImageDescription();
+        std::optional<NColorManagement::PImageDescription>          getAutoHDRImageDescription(const SP<CWLSurfaceResource>& surface);
 
         NColorManagement::SPCPRimaries                              getMasteringPrimaries();
         NColorManagement::SImageDescription::SPCMasteringLuminances getMasteringLuminances();
+        NColorManagement::PImageDescription                         getHDRImageDescription(NCMType::eCMType cmType);
 
         uint32_t                                                    getPreferredReadFormat();
 
@@ -356,8 +360,10 @@ namespace Monitor {
         bool                                m_renderingInitPassed = false;
 
         PHLWINDOWREF                        m_previousFSWindow;
+        PHLWINDOWREF                        m_autoHDRWindow;
         bool                                m_needsHDRupdate         = false;
         bool                                m_hdrMetadataFromSurface = false;
+        PHLWINDOWREF                        m_hdrMetadataWindow;
 
         std::optional<dev_t>                m_cachedAllocatorDRMDev;
         std::optional<dev_t>                m_cachedCompositorDRMDev;

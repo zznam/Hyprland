@@ -78,9 +78,9 @@ void CDynamicPermissionManager::addConfigPermissionRule(const std::string& binar
 
 eDynamicPermissionAllowMode CDynamicPermissionManager::clientPermissionMode(wl_client* client, eDynamicPermissionType permission) {
 
-    static auto PPERM = CConfigValue<Config::INTEGER>("ecosystem:enforce_permissions");
+    static auto PPERM = CConfigValue<Config::BOOL>("ecosystem:enforce_permissions");
 
-    if (*PPERM == 0)
+    if (!(*PPERM))
         return PERMISSION_RULE_ALLOW_MODE_ALLOW;
 
     const auto LOOKUP = binaryNameForWlClient(client);
@@ -150,9 +150,9 @@ eDynamicPermissionAllowMode CDynamicPermissionManager::clientPermissionMode(wl_c
 }
 
 eDynamicPermissionAllowMode CDynamicPermissionManager::clientPermissionModeWithString(pid_t pid, const std::string& str, eDynamicPermissionType permission) {
-    static auto PPERM = CConfigValue<Config::INTEGER>("ecosystem:enforce_permissions");
+    static auto PPERM = CConfigValue<Config::BOOL>("ecosystem:enforce_permissions");
 
-    if (*PPERM == 0)
+    if (!(*PPERM))
         return PERMISSION_RULE_ALLOW_MODE_ALLOW;
 
     std::optional<std::string>              binaryName;
@@ -273,8 +273,7 @@ void CDynamicPermissionManager::askForPermission(wl_client* client, const std::s
     } else
         options = {DENY, ALLOW};
 
-    rule->m_dialogBox             = CAsyncDialogBox::create(I18n::i18nEngine()->localize(I18n::TXT_KEY_PERMISSION_TITLE), description, options);
-    rule->m_dialogBox->m_priority = true;
+    rule->m_dialogBox = CAsyncDialogBox::create(I18n::i18nEngine()->localize(I18n::TXT_KEY_PERMISSION_TITLE), description, options);
 
     if (!rule->m_dialogBox) {
         LOG(Log::ERR, "CDynamicPermissionManager::askForPermission: hyprland-guiutils likely missing, cannot ask! Disabling permission control...");
@@ -282,7 +281,8 @@ void CDynamicPermissionManager::askForPermission(wl_client* client, const std::s
         return;
     }
 
-    rule->m_promise = rule->m_dialogBox->open();
+    rule->m_dialogBox->m_priority = true;
+    rule->m_promise               = rule->m_dialogBox->open();
     rule->m_promise->then([r = WP<CDynamicPermissionRule>(rule), binaryPath, ALLOW, ALLOW_AND_REMEMBER, ALLOW_ONCE, DENY](SP<CPromiseResult<std::string>> pr) {
         if (!r)
             return;

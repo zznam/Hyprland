@@ -9,6 +9,7 @@
 #include "../../../desktop/state/FocusState.hpp"
 #include "../../../protocols/types/ContentType.hpp"
 #include "../../../config/shared/parserUtils/ParserUtils.hpp"
+#include "../../../config/shared/rounding/Rounding.hpp"
 #include "../../../desktop/view/Group.hpp"
 
 #include <hyprutils/string/Numeric.hpp>
@@ -144,7 +145,7 @@ static std::expected<SBorderColorRule, std::string> parseBorderColorRule(const s
         bool                       active                 = true;
         CVarList                   colorsAndAngles        = CVarList(trim(raw), 0, 's', true);
 
-        if (colorsAndAngles.size() == 2 && !colorsAndAngles[1].contains("deg")) {
+        if (colorsAndAngles.size() == 2 && !colorsAndAngles[1].contains("deg") && colorsAndAngles[0] != "whole_monitor" && colorsAndAngles[1] != "whole_monitor") {
             auto activeColor = parseBorderColorToken(raw, colorsAndAngles[0]);
             if (!activeColor)
                 return std::unexpected(activeColor.error());
@@ -160,6 +161,11 @@ static std::expected<SBorderColorRule, std::string> parseBorderColorRule(const s
         }
 
         for (auto const& token : colorsAndAngles) {
+            if (token == "whole_monitor") {
+                (active ? activeBorderGradient : inactiveBorderGradient).m_wholeMonitor = true;
+                continue;
+            }
+
             if (active && token.contains("deg")) {
                 auto angle = strToNumber<int>(token.substr(0, token.size() - 3));
                 if (!angle)
@@ -310,11 +316,9 @@ static std::expected<WindowRuleEffectValue, std::string> parseWindowRuleEffect(C
         }
 
         case WINDOW_RULE_EFFECT_ROUNDING: {
-            auto parsed = parseInt(EFFECT_NAME, raw);
+            auto parsed = Config::Rounding::parse(raw);
             if (!parsed)
-                return std::unexpected(parsed.error());
-            if (*parsed < 0)
-                return std::unexpected(std::format("{} rule \"{}\" must be non-negative", EFFECT_NAME, raw));
+                return std::unexpected(std::format("{} rule \"{}\" failed with: {}", EFFECT_NAME, raw, parsed.error()));
             return *parsed;
         }
 

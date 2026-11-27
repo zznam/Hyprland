@@ -129,7 +129,7 @@ static std::string getSocketPath(int display, bool isLinux) {
 }
 
 static bool openSockets(std::array<CFileDescriptor, 2>& sockets, int display) {
-    static auto CREATEABSTRACTSOCKET = CConfigValue<Config::INTEGER>("xwayland:create_abstract_socket");
+    static auto CREATEABSTRACTSOCKET = CConfigValue<Config::BOOL>("xwayland:create_abstract_socket");
 
     if (!ensureSocketDirExists())
         return false;
@@ -205,7 +205,7 @@ bool CXWaylandServer::tryOpenSockets() {
                 continue;
             }
 
-            const std::string pidStr = std::format("{:010d}\n", getpid());
+            const std::string pidStr = std::format("{:10d}\n", getpid());
             ASSERT(pidStr.length() == 11);
             if (write(fd.get(), pidStr.c_str(), 11) != 11L) {
                 safeRemove(lockPath);
@@ -392,6 +392,10 @@ bool CXWaylandServer::start() {
         runXWayland(notifyFds[1]);
         _exit(0);
     }
+
+    // Only XWayland should retain the child ends of these sockets.
+    m_waylandFDs[1].reset();
+    m_xwmFDs[1].reset();
 
     return true;
 }

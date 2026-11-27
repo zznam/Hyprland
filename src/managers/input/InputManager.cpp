@@ -28,6 +28,7 @@
 #include "../../protocols/core/DataDevice.hpp"
 #include "../../protocols/core/Compositor.hpp"
 #include "../../protocols/InputCapture.hpp"
+#include "../../hotkeys/Manager.hpp"
 
 #include "../../devices/Mouse.hpp"
 #include "../../devices/VirtualPointer.hpp"
@@ -127,7 +128,7 @@ CInputManager::~CInputManager() {
 }
 
 void CInputManager::onMouseMoved(IPointer::SMotionEvent e) {
-    static auto PNOACCEL = CConfigValue<Config::INTEGER>("input:force_no_accel");
+    static auto PNOACCEL = CConfigValue<Config::BOOL>("input:force_no_accel");
 
     Vector2D    delta   = e.delta;
     Vector2D    unaccel = e.unaccel;
@@ -260,12 +261,12 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
 
     static auto PFOLLOWMOUSE          = CConfigValue<Config::INTEGER>("input:follow_mouse");
     static auto PFOLLOWMOUSETHRESHOLD = CConfigValue<Config::FLOAT>("input:follow_mouse_threshold");
-    static auto PMOUSEREFOCUS         = CConfigValue<Config::INTEGER>("input:mouse_refocus");
-    static auto PFOLLOWONDND          = CConfigValue<Config::INTEGER>("misc:always_follow_on_dnd");
+    static auto PMOUSEREFOCUS         = CConfigValue<Config::BOOL>("input:mouse_refocus");
+    static auto PFOLLOWONDND          = CConfigValue<Config::BOOL>("misc:always_follow_on_dnd");
     static auto PFLOATBEHAVIOR        = CConfigValue<Config::INTEGER>("input:float_switch_override_focus");
-    static auto PMOUSEFOCUSMON        = CConfigValue<Config::INTEGER>("misc:mouse_move_focuses_monitor");
-    static auto PRESIZEONBORDER       = CConfigValue<Config::INTEGER>("general:resize_on_border");
-    static auto PRESIZECURSORICON     = CConfigValue<Config::INTEGER>("general:hover_icon_on_border");
+    static auto PMOUSEFOCUSMON        = CConfigValue<Config::BOOL>("misc:mouse_move_focuses_monitor");
+    static auto PRESIZEONBORDER       = CConfigValue<Config::BOOL>("general:resize_on_border");
+    static auto PRESIZECURSORICON     = CConfigValue<Config::BOOL>("general:hover_icon_on_border");
 
     const auto  FOLLOWMOUSE = *PFOLLOWONDND && PROTO::data->dndActive() ? 1 : *PFOLLOWMOUSE;
 
@@ -282,6 +283,7 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
     SP<CWLSurfaceResource> foundSurface;
     Vector2D               surfaceCoords;
     Vector2D               surfacePos = Vector2D(-1337, -1337);
+    std::optional<CBox>    heldSurfaceBox;
     PHLWINDOW              pFoundWindow;
     PHLLS                  pFoundLayerSurface;
     const auto             FOCUS_REASON = refocus ? Desktop::FOCUS_REASON_CLICK : Desktop::FOCUS_REASON_FFM;
@@ -410,6 +412,7 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
                     const auto PWINDOW = Desktop::View::CWindow::fromView(HLSurface->view());
                     const auto LS      = Desktop::View::CLayerSurface::fromView(HLSurface->view());
                     surfacePos         = BOX->pos();
+                    heldSurfaceBox     = BOX;
 
                     if (PWINDOW && PWINDOW->acceptsInput())
                         pFoundWindow = PWINDOW;
@@ -564,7 +567,9 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
             return; // setGrab will refocus
         } else {
             // we need to grab the last surface.
-            foundSurface = g_pSeatManager->m_state.pointerFocus.lock();
+            foundSurface       = g_pSeatManager->m_state.pointerFocus.lock();
+            pFoundWindow       = nullptr;
+            pFoundLayerSurface = nullptr;
 
             auto HLSurface = Desktop::View::CWLSurface::fromResource(foundSurface);
 
@@ -595,8 +600,14 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
 
     Vector2D surfaceLocal = surfacePos == Vector2D(-1337, -1337) ? surfaceCoords : mouseCoords - surfacePos;
 
-    if (pFoundWindow && pFoundWindow->backend().isX11()) // for x11 force scale zero
-        surfaceLocal = pFoundWindow->backend().surfaceLocalToBuffer(surfaceLocal);
+    if (pFoundWindow && pFoundWindow->backend().isX11()) {
+        // a held button keeps the focus on this surface while the cursor may already be on another monitor (e.g. dragging),
+        // and X11 lays monitors out differently, so map the cursor where it really is instead of extrapolating from the surface
+        if (heldSurfaceBox && !heldSurfaceBox->containsPoint(mouseCoords))
+            surfaceLocal = pFoundWindow->backend().globalToBuffer(mouseCoords, surfacePos);
+        else // for x11 force scale zero
+            surfaceLocal = pFoundWindow->backend().surfaceLocalToBuffer(surfaceLocal);
+    }
 
     if (pointerOnly) {
         g_pSeatManager->setPointerFocus(foundSurface, surfaceLocal);
@@ -727,6 +738,11 @@ void CInputManager::onMouseButton(IPointer::SButtonEvent e, SP<IPointer> mouse) 
 
     PROTO::inputCapture->button(e.button, e.state);
 
+    if (Hotkeys::mgr()->onButton(e, mouse)) {
+        Keybinds::mgr()->onMouseEvent(e, mouse, PROTO::inputCapture->isCaptured());
+        return;
+    }
+
     if (PROTO::inputCapture->isCaptured()) {
         Keybinds::mgr()->onMouseEvent(e, mouse, true);
         if (e.state == WL_POINTER_BUTTON_STATE_RELEASED)
@@ -839,11 +855,11 @@ void CInputManager::setClickMode(eClickBehaviorMode mode) {
 void CInputManager::processMouseDownNormal(const IPointer::SButtonEvent& e, SP<IPointer> mouse) {
 
     // notify the keybind manager
-    static auto PPASSMOUSE         = CConfigValue<Config::INTEGER>("binds:pass_mouse_when_bound");
+    static auto PPASSMOUSE         = CConfigValue<Config::BOOL>("binds:pass_mouse_when_bound");
     const auto  PASS               = Keybinds::mgr()->onMouseEvent(e, mouse);
     static auto PFOLLOWMOUSE       = CConfigValue<Config::INTEGER>("input:follow_mouse");
     static auto PSWALLOWFOCUSCLICK = CConfigValue<Config::BOOL>("input:swallow_focus_click");
-    static auto PRESIZEONBORDER    = CConfigValue<Config::INTEGER>("general:resize_on_border");
+    static auto PRESIZEONBORDER    = CConfigValue<Config::BOOL>("general:resize_on_border");
     static auto PBORDERSIZE        = CConfigValue<Config::INTEGER>("general:border_size");
     static auto PBORDERGRABEXTEND  = CConfigValue<Config::INTEGER>("general:extend_border_grab_area");
     const auto  BORDER_GRAB_AREA   = *PRESIZEONBORDER ? *PBORDERSIZE + *PBORDERGRABEXTEND : 0;
@@ -970,7 +986,7 @@ void CInputManager::onMouseWheel(IPointer::SAxisEvent e, SP<IPointer> pointer) {
     if (e.source == WL_POINTER_AXIS_SOURCE_WHEEL && e.deltaDiscrete == 0 && e.delta != 0)
         e.deltaDiscrete = std::round(e.delta * 8.0);
 
-    const bool ISTOUCHPADSCROLL = *PTOUCHPADSCROLLFACTOR <= 0.f || e.source == WL_POINTER_AXIS_SOURCE_FINGER;
+    const bool ISTOUCHPADSCROLL = e.source == WL_POINTER_AXIS_SOURCE_FINGER;
     auto       factor           = ISTOUCHPADSCROLL ? *PTOUCHPADSCROLLFACTOR : *PINPUTSCROLLFACTOR;
 
     if (pointer && pointer->m_scrollFactor.has_value())
@@ -984,12 +1000,16 @@ void CInputManager::onMouseWheel(IPointer::SAxisEvent e, SP<IPointer> pointer) {
     if (e.mouse)
         recheckMouseWarpOnMouseInput();
 
-    PROTO::inputCapture->axis(e.axis, e.delta);
-    if (e.source == 0)
-        PROTO::inputCapture->axisValue120(e.axis, e.delta);
-    else if (e.delta == 0)
-        PROTO::inputCapture->axisStop(e.axis);
+    if (e.source == WL_POINTER_AXIS_SOURCE_WHEEL)
+        PROTO::inputCapture->axisValue120(e.axis, e.deltaDiscrete);
+    else {
+        PROTO::inputCapture->axis(e.axis, e.delta);
+        if (e.delta == 0)
+            PROTO::inputCapture->axisStop(e.axis);
+    }
     PROTO::inputCapture->frame();
+
+    Hotkeys::mgr()->onAxis();
 
     const bool BIND_PASSES = Keybinds::mgr()->onAxisEvent(e, pointer);
     bool       passEvent   = !PROTO::inputCapture->isCaptured() && BIND_PASSES;
@@ -1040,7 +1060,7 @@ void CInputManager::onMouseWheel(IPointer::SAxisEvent e, SP<IPointer> pointer) {
     double discrete = (e.deltaDiscrete != 0) ? (factor * e.deltaDiscrete / std::abs(e.deltaDiscrete)) : 0;
     double delta    = e.delta * factor;
 
-    if (e.source == 0) {
+    if (e.source == 0 && factor != 0) {
         // if an application supports v120, it should ignore discrete anyways
         if ((*PEMULATEDISCRETE >= 1 && std::abs(e.deltaDiscrete) != 120) || *PEMULATEDISCRETE >= 2) {
 
@@ -1127,7 +1147,7 @@ void CInputManager::newVirtualKeyboard(SP<CVirtualKeyboardV1Resource> keyboard) 
 }
 
 void CInputManager::setupKeyboard(SP<IKeyboard> keeb) {
-    static auto PDPMS = CConfigValue<Config::INTEGER>("misc:key_press_enables_dpms");
+    static auto PDPMS = CConfigValue<Config::BOOL>("misc:key_press_enables_dpms");
 
     m_hids.emplace_back(keeb);
 
@@ -1227,6 +1247,7 @@ void CInputManager::applyConfigToKeyboard(SP<IKeyboard> pKeyboard) {
     const auto ENABLED    = HASCONFIG && Config::mgr()->deviceConfigExplicitlySet(devname, "enabled") ? Config::mgr()->getDeviceInt(devname, "enabled") : true;
     const auto ALLOWBINDS = HASCONFIG && Config::mgr()->deviceConfigExplicitlySet(devname, "keybinds") ? Config::mgr()->getDeviceInt(devname, "keybinds") : true;
 
+    pKeyboard->m_deviceTags.clear();
     for (const auto& tagString : CVarList2(Config::mgr()->getDeviceString(devname, "tags"))) {
         pKeyboard->m_deviceTags.emplace(std::string_view(tagString));
     }
@@ -1348,6 +1369,7 @@ void CInputManager::setPointerConfigs() {
 
         const auto HASCONFIG = Config::mgr()->deviceConfigExists(devname);
 
+        m->m_deviceTags.clear();
         if (HASCONFIG) {
             const auto ENABLED = HASCONFIG && Config::mgr()->deviceConfigExplicitlySet(devname, "enabled") ? Config::mgr()->getDeviceInt(devname, "enabled") : true;
             if (ENABLED && !m->m_connected) {
@@ -1709,8 +1731,10 @@ void CInputManager::onKeyboardKey(const IKeyboard::SKeyEvent& event, SP<IKeyboar
 
     bool passEvent = DISALLOWACTION && !PROTO::inputCapture->isCaptured();
 
-    if (!DISALLOWACTION)
-        passEvent = Keybinds::mgr()->onKeyEvent(event, pKeyboard) && !PROTO::inputCapture->isCaptured();
+    if (!DISALLOWACTION) {
+        const bool HOTKEY_CONSUMED = Hotkeys::mgr()->onKey(event, pKeyboard);
+        passEvent                  = Keybinds::mgr()->onKeyEvent(event, pKeyboard) && !HOTKEY_CONSUMED && !PROTO::inputCapture->isCaptured();
+    }
 
     if (g_pSeatManager->m_keyboardEventHandlers.dispatch(event, pKeyboard, passEvent))
         return;
@@ -1761,7 +1785,7 @@ void CInputManager::onKeyboardKey(const IKeyboard::SKeyEvent& event, SP<IKeyboar
 }
 
 void CInputManager::onKeyboardMod(SP<IKeyboard> pKeyboard) {
-    static auto PSENDMOD = CConfigValue<Hyprlang::INT>("input-capture:capture_modifiers");
+    static auto PSENDMOD = CConfigValue<Config::INTEGER>("input-capture:capture_modifiers");
     if (!pKeyboard->m_enabled)
         return;
 
@@ -2203,12 +2227,10 @@ void CInputManager::setCursorIconOnBorder(PHLWINDOW w) {
         return;
     }
 
-    static auto PEXTENDBORDERGRAB = CConfigValue<Config::INTEGER>("general:extend_border_grab_area");
-    const int   BORDERSIZE        = w->presentation().borderSize();
-    const int   ROUNDING          = w->presentation().rounding();
+    static auto          PEXTENDBORDERGRAB = CConfigValue<Config::INTEGER>("general:extend_border_grab_area");
+    const int            BORDERSIZE        = w->presentation().borderSize();
+    const auto           ROUNDING          = w->presentation().rounding();
 
-    // give a small leeway (10 px) for corner icon
-    const auto           CORNER           = ROUNDING + BORDERSIZE + 10;
     const auto           mouseCoords      = getMouseCoordsInternal();
     CBox                 box              = w->getWindowMainSurfaceBox();
     eBorderIconDirection direction        = BORDERICON_NONE;
@@ -2235,46 +2257,8 @@ void CInputManager::setCursorIconOnBorder(PHLWINDOW w) {
 
         if (onDeco)
             direction = BORDERICON_NONE;
-        else {
-            if (box.containsPoint(mouseCoords)) {
-                if (!w->presentation().isInCurvedCorner(mouseCoords.x, mouseCoords.y)) {
-                    direction = BORDERICON_NONE;
-                } else {
-                    if (mouseCoords.y < box.y + CORNER) {
-                        if (mouseCoords.x < box.x + CORNER)
-                            direction = BORDERICON_UP_LEFT;
-                        else
-                            direction = BORDERICON_UP_RIGHT;
-                    } else {
-                        if (mouseCoords.x < box.x + CORNER)
-                            direction = BORDERICON_DOWN_LEFT;
-                        else
-                            direction = BORDERICON_DOWN_RIGHT;
-                    }
-                }
-            } else {
-                if (mouseCoords.y < box.y + CORNER) {
-                    if (mouseCoords.x < box.x + CORNER)
-                        direction = BORDERICON_UP_LEFT;
-                    else if (mouseCoords.x > box.x + box.width - CORNER)
-                        direction = BORDERICON_UP_RIGHT;
-                    else
-                        direction = BORDERICON_UP;
-                } else if (mouseCoords.y > box.y + box.height - CORNER) {
-                    if (mouseCoords.x < box.x + CORNER)
-                        direction = BORDERICON_DOWN_LEFT;
-                    else if (mouseCoords.x > box.x + box.width - CORNER)
-                        direction = BORDERICON_DOWN_RIGHT;
-                    else
-                        direction = BORDERICON_DOWN;
-                } else {
-                    if (mouseCoords.x < box.x + CORNER)
-                        direction = BORDERICON_LEFT;
-                    else if (mouseCoords.x > box.x + box.width - CORNER)
-                        direction = BORDERICON_RIGHT;
-                }
-            }
-        }
+        else if (!box.containsPoint(mouseCoords) || w->presentation().isInCurvedCorner(mouseCoords.x, mouseCoords.y))
+            direction = Input::borderIconDirection(mouseCoords - box.pos(), box.size(), ROUNDING, BORDERSIZE);
     }
 
     if (direction == m_borderIconDirection)
@@ -2296,7 +2280,7 @@ void CInputManager::setCursorIconOnBorder(PHLWINDOW w) {
 }
 
 void CInputManager::recheckMouseWarpOnMouseInput() {
-    static auto PWARPFORNONMOUSE = CConfigValue<Config::INTEGER>("cursor:warp_back_after_non_mouse_input");
+    static auto PWARPFORNONMOUSE = CConfigValue<Config::BOOL>("cursor:warp_back_after_non_mouse_input");
 
     if (!m_lastInputMouse && *PWARPFORNONMOUSE)
         Pointer::mgr()->warpTo(m_lastMousePos);

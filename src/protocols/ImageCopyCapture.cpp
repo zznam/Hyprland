@@ -158,7 +158,7 @@ CImageCopyCaptureCursorSession::CImageCopyCaptureCursorSession(SP<CExtImageCopyC
     if (!m_source || m_source->m_workspace || (!m_source->m_monitor && !m_source->m_window))
         return;
 
-    const auto PMONITOR = m_source->m_monitor.expired() ? m_source->m_window->m_monitor.lock() : m_source->m_monitor.lock();
+    const auto PMONITOR = m_source->monitor();
     if (!PMONITOR)
         return;
 
@@ -254,18 +254,28 @@ void CImageCopyCaptureCursorSession::createFrame(SP<CExtImageCopyCaptureFrameV1>
             return;
         }
 
-        const auto PMONITOR = m_source->m_monitor.expired() ? m_source->m_window->m_monitor.lock() : m_source->m_monitor.lock();
+        const auto PMONITOR = m_source->monitor();
+        if (!PMONITOR) {
+            m_captured = true;
+            m_frameResource->sendFailed(EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
+            return;
+        }
 
-        auto       sourceBoxCallback = [this]() { return m_source ? m_source->logicalBox() : CBox(); };
-        auto       error             = m_session->share(PMONITOR, m_buffer, sourceBoxCallback, [this](eScreenshareResult result) {
+        auto sourceBoxCallback = [this]() { return m_source ? m_source->logicalBox() : CBox(); };
+
+        // the callback may run after this session or its frame is gone, don't capture this
+        auto error = m_session->share(PMONITOR, m_buffer, sourceBoxCallback, [frame = WP<CExtImageCopyCaptureFrameV1>{m_frameResource}](eScreenshareResult result) {
+            if (frame.expired())
+                return;
+
             switch (result) {
-                case RESULT_COPIED: m_frameResource->sendReady(); break;
-                case RESULT_NOT_COPIED: m_frameResource->sendFailed(EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN); break;
+                case RESULT_COPIED: frame->sendReady(); break;
+                case RESULT_NOT_COPIED: frame->sendFailed(EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN); break;
                 case RESULT_TIMESTAMP:
                     auto [sec, nsec] = Time::secNsec(Time::steadyNow());
                     uint32_t tvSecHi = (sizeof(sec) > 4) ? sec >> 32 : 0;
                     uint32_t tvSecLo = sec & 0xFFFFFFFF;
-                    m_frameResource->sendPresentationTime(tvSecHi, tvSecLo, nsec);
+                    frame->sendPresentationTime(tvSecHi, tvSecLo, nsec);
                     break;
             }
         });
@@ -335,9 +345,8 @@ void CImageCopyCaptureCursorSession::sendCursorEvents() {
     if (PERM != PERMISSION_RULE_ALLOW_MODE_ALLOW)
         return;
 
-    const auto PMONITOR  = m_source->m_monitor.expired() ? m_source->m_window->m_monitor.lock() : m_source->m_monitor.lock();
-    CBox       sourceBox = m_source->logicalBox();
-    bool       overlaps  = Pointer::mgr()->getCursorBoxGlobal().overlaps(sourceBox);
+    CBox sourceBox = m_source->logicalBox();
+    bool overlaps  = Pointer::mgr()->getCursorBoxGlobal().overlaps(sourceBox);
 
     if (m_entered && !overlaps) {
         m_entered = false;

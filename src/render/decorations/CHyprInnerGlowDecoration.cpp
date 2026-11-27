@@ -81,7 +81,7 @@ void CHyprInnerGlowDecoration::damageEntire() {
 
     CBox       windowBox = PWINDOW->getWindowMainSurfaceBox();
 
-    const auto PWORKSPACE = PWINDOW->m_workspace;
+    const auto PWORKSPACE = PWINDOW->presentation().workspace();
     if (PWORKSPACE && PWORKSPACE->m_renderOffset->isBeingAnimated() && !(PWINDOW->m_state & Desktop::View::WINDOW_STATE_PINNED))
         windowBox.translate(PWORKSPACE->m_renderOffset->value());
     windowBox.translate(PWINDOW->presentation().floatingOffset());
@@ -108,7 +108,7 @@ void CHyprInnerGlowDecoration::draw(Render::CRenderContext& ctx, PHLMONITOR pMon
 }
 
 void CHyprInnerGlowDecoration::render(Render::CRenderContext& ctx, PHLMONITOR pMonitor, float const& a, const Render::SWindowRenderPresentation& presentation) {
-    static auto PGLOW = CConfigValue<Config::INTEGER>("decoration:glow:enabled");
+    static auto PGLOW = CConfigValue<Config::BOOL>("decoration:glow:enabled");
     if (!*PGLOW || !visible())
         return;
 
@@ -117,7 +117,7 @@ void CHyprInnerGlowDecoration::render(Render::CRenderContext& ctx, PHLMONITOR pM
     if (!validMapped(PWINDOW))
         return;
 
-    const auto ROUNDING      = PWINDOW->presentation().rounding() > 0 ? PWINDOW->presentation().rounding() - 1 : PWINDOW->presentation().rounding();
+    const auto ROUNDING      = Math::SCornerRadii{PWINDOW->presentation().rounding()};
     const auto ROUNDINGPOWER = PWINDOW->presentation().roundingPower();
 
     CBox       windowBox = {m_lastWindowPos.x, m_lastWindowPos.y, m_lastWindowSize.x, m_lastWindowSize.y};
@@ -144,8 +144,8 @@ void CHyprInnerGlowDecoration::render(Render::CRenderContext& ctx, PHLMONITOR pM
     ctx.m_data.currentWindow.reset();
 }
 
-void CHyprInnerGlowDecoration::drawGlowInternal(Render::CRenderContext& ctx, const CBox& box, int round, float roundingPower, int range, const Config::CGradientValueData& grad,
-                                                float a) {
+void CHyprInnerGlowDecoration::drawGlowInternal(Render::CRenderContext& ctx, const CBox& box, Math::SCornerRadii round, float roundingPower, int range,
+                                                const Config::CGradientValueData& grad, float a) {
     if (box.w < 1 || box.h < 1)
         return;
     g_pHyprRenderer->blend(true);
@@ -154,8 +154,8 @@ void CHyprInnerGlowDecoration::drawGlowInternal(Render::CRenderContext& ctx, con
     ctx.m_data.currentWindow.reset();
 }
 
-void CHyprInnerGlowDecoration::drawGlowInternal(Render::CRenderContext& ctx, const CBox& box, int round, float roundingPower, int range, const Config::CGradientValueData& grad1,
-                                                const Config::CGradientValueData& grad2, float lerp, float a) {
+void CHyprInnerGlowDecoration::drawGlowInternal(Render::CRenderContext& ctx, const CBox& box, Math::SCornerRadii round, float roundingPower, int range,
+                                                const Config::CGradientValueData& grad1, const Config::CGradientValueData& grad2, float lerp, float a) {
     if (box.w < 1 || box.h < 1)
         return;
     g_pHyprRenderer->blend(true);
@@ -169,6 +169,6 @@ eDecorationLayer CHyprInnerGlowDecoration::getDecorationLayer() {
 }
 
 bool CHyprInnerGlowDecoration::visible() {
-    static auto PENABLED = CConfigValue<Config::INTEGER>("decoration:glow:enabled");
+    static auto PENABLED = CConfigValue<Config::BOOL>("decoration:glow:enabled");
     return *PENABLED && m_window->m_ruleApplicator->decorate().valueOrDefault() && !m_window->m_ruleApplicator->noGlow().valueOrDefault();
 }

@@ -15,7 +15,6 @@
 #include "../managers/eventLoop/EventLoopManager.hpp"
 #include "../managers/input/InputManager.hpp"
 #include "../pointer/PointerManager.hpp"
-#include "../protocols/Hotkey.hpp"
 #include "../protocols/InputCapture.hpp"
 #include "../protocols/ShortcutsInhibit.hpp"
 #include "../protocols/core/DataDevice.hpp"
@@ -216,8 +215,6 @@ bool CKeybindManager::onKeyEvent(std::any event, SP<IKeyboard> keyboard) {
         return false;
 
     const auto MODIFIERS = g_pInputManager->getModsFromAllKBs();
-    if (PROTO::hotkey && PROTO::hotkey->onKey(KEYSYM, MODIFIERS, KEYCODE, KEY_EVENT.state == WL_KEYBOARD_KEY_STATE_PRESSED, KEY_EVENT.timeMs))
-        return false;
 
     Config::Actions::state()->m_timeLastMs    = KEY_EVENT.timeMs;
     Config::Actions::state()->m_lastCode      = KEYCODE;
@@ -342,6 +339,9 @@ bool CKeybindManager::onAxisEvent(const IPointer::SAxisEvent& event, SP<IPointer
         },
         nullptr);
 
+    if (!RESULT.passEvent)
+        shadowBinds();
+
     return RESULT.passEvent;
 }
 
@@ -422,19 +422,43 @@ bool CKeybindManager::onMouseEvent(const IPointer::SButtonEvent& event, SP<IPoin
 void CKeybindManager::onSwitchEvent(const std::string& switchName) {
     const SResolvedKey KEY{.event = std::format("switch:{}", switchName)};
     cancelTimedBinds();
-    processEvent({.heldKeys = m_inputState.heldKeys(), .trigger = KEY, .pressed = true, .submap = std::string{currentSubmap()}}, nullptr);
+    processEvent(
+        {
+            .heldKeys     = m_inputState.heldKeys(),
+            .trigger      = KEY,
+            .modifiersNow = g_pInputManager->getModsFromAllKBs(),
+            .pressed      = true,
+            .submap       = std::string{currentSubmap()},
+        },
+        nullptr);
 }
 
 void CKeybindManager::onSwitchOnEvent(const std::string& switchName) {
     const SResolvedKey KEY{.event = std::format("switch:on:{}", switchName)};
     cancelTimedBinds();
-    processEvent({.heldKeys = m_inputState.heldKeys(), .trigger = KEY, .pressed = true, .submap = std::string{currentSubmap()}}, nullptr);
+    processEvent(
+        {
+            .heldKeys     = m_inputState.heldKeys(),
+            .trigger      = KEY,
+            .modifiersNow = g_pInputManager->getModsFromAllKBs(),
+            .pressed      = true,
+            .submap       = std::string{currentSubmap()},
+        },
+        nullptr);
 }
 
 void CKeybindManager::onSwitchOffEvent(const std::string& switchName) {
     const SResolvedKey KEY{.event = std::format("switch:off:{}", switchName)};
     cancelTimedBinds();
-    processEvent({.heldKeys = m_inputState.heldKeys(), .trigger = KEY, .pressed = true, .submap = std::string{currentSubmap()}}, nullptr);
+    processEvent(
+        {
+            .heldKeys     = m_inputState.heldKeys(),
+            .trigger      = KEY,
+            .modifiersNow = g_pInputManager->getModsFromAllKBs(),
+            .pressed      = true,
+            .submap       = std::string{currentSubmap()},
+        },
+        nullptr);
 }
 
 void CKeybindManager::onDeviceRemoved(const SP<IHID>& device) {
@@ -445,7 +469,7 @@ void CKeybindManager::onDeviceRemoved(const SP<IHID>& device) {
 }
 
 SBindResult CKeybindManager::processEvent(const SBindEventContext& context, const SP<IKeyboard>& keyboard, SPressedInput* pressedInput) {
-    static auto                      PDISABLEINHIBIT = CConfigValue<Config::INTEGER>("binds:disable_keybind_grabbing");
+    static auto                      PDISABLEINHIBIT = CConfigValue<Config::BOOL>("binds:disable_keybind_grabbing");
     static auto                      PDRAGTHRESHOLD  = CConfigValue<Config::INTEGER>("binds:drag_threshold");
 
     const bool                       INHIBITED = !*PDISABLEINHIBIT && PROTO::shortcutsInhibit->isInhibited();
@@ -508,7 +532,7 @@ SBindResult CKeybindManager::processEvent(const SBindEventContext& context, cons
             suppressSubChords(bind, context);
         }
 
-        if (context.pressed && (bind->hasFlag(BIND_FLAG_NON_CONSUMING) || bind->hasFlag(BIND_FLAG_RELEASE) || bind->hasFlag(BIND_FLAG_AUTO_CONSUMING)))
+        if (context.pressed && (bind->hasFlag(BIND_FLAG_NON_CONSUMING) || bind->hasFlag(BIND_FLAG_AUTO_CONSUMING)))
             continue;
 
         claimed = true;
@@ -772,6 +796,9 @@ void CKeybindManager::shadowBinds(const std::optional<SResolvedKey>& excluded, c
         const bool MATCH_RELEASE = bind->hasFlag(BIND_FLAG_RELEASE) && bind->chordSize() <= 1;
 
         for (const auto& input : m_inputState.pressed()) {
+            if (input.key.event)
+                continue;
+
             const auto device = input.device.lock();
             if (!device)
                 continue;
@@ -895,7 +922,7 @@ bool CKeybindManager::handleInternalKeybinds(xkb_keysym_t keysym) {
 }
 
 bool CKeybindManager::canInvokeNow(const PBind& bind) const {
-    static auto PDISABLEINHIBIT = CConfigValue<Config::INTEGER>("binds:disable_keybind_grabbing");
+    static auto PDISABLEINHIBIT = CConfigValue<Config::BOOL>("binds:disable_keybind_grabbing");
 
     if (!bind->enabled() || !m_registry.contains(bind) || m_shadowed.contains(bind))
         return false;

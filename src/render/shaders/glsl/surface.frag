@@ -4,9 +4,17 @@
 
 #include "defines.h"
 
+#if USE_EXTERNAL
+#extension GL_OES_EGL_image_external_essl3 : require
+#endif
+
 precision         highp float;
 in vec2           v_texcoord;
+#if USE_EXTERNAL
+uniform samplerExternalOES tex;
+#else
 uniform sampler2D tex;
+#endif
 #if USE_BLUR
 uniform vec2      uvSize;
 uniform vec2      uvOffset;
@@ -30,13 +38,13 @@ uniform vec3 tint;
 #endif
 
 #if USE_ROUNDING
-uniform float radius;
+uniform vec4  radius;
 uniform float roundingPower;
 uniform vec2  topLeft;
 uniform vec2  fullSize;
 #include "rounding.glsl"
 #else
-const float radius        = 0.0;
+const vec4  radius        = vec4(0.0);
 const float roundingPower = 2.0;
 #endif
 
@@ -110,7 +118,7 @@ void main() {
 #endif
 #if USE_TONEMAP
                           ,
-                          maxLuminance, dstMaxLuminance, dstRefLuminance, srcRefLuminance, tonemapMode
+                          maxLuminance, dstMaxLuminance, dstRefLuminance, tonemapMode
 #endif
 #if USE_SDR_MOD
                           ,
@@ -151,7 +159,13 @@ void main() {
         pixBlurAlphaMask = 0.0;
 #endif
     vec4  blurredPixColor = texture(blurredBG, blurUV);
-    float pixBlurBgAlpha  = (1.0 - pixColor.a) * pixBlurAlphaMask;
+#if USE_BLUR_PROPORTIONAL
+    float t               = 1.0 - pixColor.a;
+    float blurredPixAlpha = 1.0 - t * t * t;
+#else
+    float blurredPixAlpha = 1.0;
+#endif
+    float pixBlurBgAlpha  = (1.0 - pixColor.a) * pixBlurAlphaMask * blurredPixAlpha;
     pixColor += blurredPixColor * pixBlurBgAlpha;
 #else
 #if USE_BLUR_ALPHA_MASK
@@ -164,7 +178,13 @@ void main() {
     float pixBlurAlphaMask = 1.0;
 #endif
     vec4  blurredPixColor = texture(blurredBG, blurUV);
-    float pixBlurBgAlpha  = (1.0 - pixColor.a) * pixBlurAlphaMask;
+#if USE_BLUR_PROPORTIONAL
+    float t               = 1.0 - pixColor.a;
+    float blurredPixAlpha = 1.0 - t * t * t;
+#else
+    float blurredPixAlpha = 1.0;
+#endif
+    float pixBlurBgAlpha  = (1.0 - pixColor.a) * pixBlurAlphaMask * blurredPixAlpha;
     pixColor += blurredPixColor * pixBlurBgAlpha;
 #endif
 #endif
@@ -189,7 +209,13 @@ void main() {
         mirrorBlurAlphaMask = 0.0;
 #endif
     vec4  blurredMirrorColor = texture(blurredBG, blurUV);
-    float mirrorBlurBgAlpha  = (1.0 - mirrorColor.a) * mirrorBlurAlphaMask;
+#if USE_BLUR_PROPORTIONAL
+    float t                  = 1.0 - pixColor.a;
+    float blurredMirrorAlpha = 1.0 - t * t * t;
+#else
+    float blurredMirrorAlpha = 1.0;
+#endif
+    float mirrorBlurBgAlpha  = (1.0 - mirrorColor.a) * mirrorBlurAlphaMask * blurredMirrorAlpha;
     mirrorColor += blurredMirrorColor * mirrorBlurBgAlpha;
 #else
 #if USE_BLUR_ALPHA_MASK
@@ -201,7 +227,13 @@ void main() {
         float mirrorBlurAlphaMask = 1.0;
 #endif
         vec4  blurredMirrorColor = texture(blurredBG, blurUV);
-        float mirrorBlurBgAlpha  = (1.0 - mirrorColor.a) * mirrorBlurAlphaMask;
+#if USE_BLUR_PROPORTIONAL
+        float t                  = 1.0 - pixColor.a;
+        float blurredMirrorAlpha = 1.0 - t * t * t;
+#else
+        float blurredMirrorAlpha = 1.0;
+#endif
+        float mirrorBlurBgAlpha  = (1.0 - mirrorColor.a) * mirrorBlurAlphaMask * blurredMirrorAlpha;
         mirrorColor += blurredMirrorColor * mirrorBlurBgAlpha;
 #if USE_BLUR_ALPHA_MASK
     } else

@@ -135,7 +135,7 @@ eScreenshareError CScreenshareFrame::share(SP<IHLBuffer> buffer, const CRegion& 
     }
 
     // schedule a frame so that when a screenshare starts it isn't black until the output is updated
-    if (m_isFirst || m_session->m_type == SHARE_WORKSPACE) {
+    if (m_isFirst || m_session->m_type == SHARE_WINDOW || m_session->m_type == SHARE_WORKSPACE) {
         const auto PMONITOR = m_session->monitor();
         if (PMONITOR)
             PMONITOR->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_NEEDS_FRAME);
@@ -250,7 +250,7 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
                 [&](SP<CWLSurfaceResource> surf, const Vector2D& localOff, void*) {
                     const auto size = surf->m_current.size;
                     const auto surfBox =
-                        CBox{popupBaseOffset + popRel + localOff, size}.translate(PMONITOR->m_position).scale(PMONITOR->m_scale).translate(-m_session->m_captureBox.pos());
+                        CBox{popupBaseOffset + popRel + localOff, size}.translate(-PMONITOR->m_position).scale(PMONITOR->m_scale).translate(-m_session->m_captureBox.pos());
 
                     if LIKELY (surfBox.w > 0 && surfBox.h > 0)
                         g_pHyprRenderer->draw(ctx, CRectPassElement::SRectData{.box = surfBox, .color = Colors::BLACK}, surfBox);
@@ -303,11 +303,12 @@ void CScreenshareFrame::renderMonitor(Render::CRenderContext& ctx) {
         const auto noScreenShareBox = CBox{REALPOS.x, REALPOS.y, std::max(REALSIZE.x, 5.0), std::max(REALSIZE.y, 5.0)}
                                           .translate(-PMONITOR->m_position)
                                           .scale(PMONITOR->m_scale)
+                                          .round()
                                           .translate(-m_session->m_captureBox.pos());
 
         // seems like rounding doesn't play well with how we manipulate the box position to render regions causing the window to leak through
         const auto dontRound     = m_session->m_captureBox.pos() != Vector2D() || Fullscreen::controller()->isFullscreen(w, Fullscreen::FSMODE_FULLSCREEN);
-        const auto rounding      = dontRound ? 0 : w->presentation().rounding() * PMONITOR->m_scale;
+        const auto rounding      = dontRound ? Math::SCornerRadii{} : w->presentation().rounding() * PMONITOR->m_scale;
         const auto roundingPower = dontRound ? 2.0f : w->presentation().roundingPower();
 
         g_pHyprRenderer->draw(ctx,
